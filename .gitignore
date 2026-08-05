@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+venv/
+.venv/
+
+# Secrets
+.env
+config.env
+
+# Evaluation output — regenerate with `python code/eval_translation.py`
+code/eval_*.json
+code/unknown_terms_log.jsonl
+
+# Superseded result files. These report figures the current README explains are
+# invalid (a 93.7% coverage number and a 50% match rate, both measured on data
+# the system had memorised). Kept out of the repo so they cannot be mistaken
+# for current results.
+code/tay_test_sentences_full_summary.json
+code/test_excel_translation_verified.json
+
+# Source material for the dictionary: published works whose redistribution
+# rights are unclear, plus large binaries. See DATA.md.
+reference/
+PDFs/
+*.pdf
+*.docx
+*.rar
+*.msi
+*.zip
+
+# Superseded prototypes, excluded rather than shipped. Both are non-functional:
+# simple_code/ depends on OpenAI file IDs belonging to an account it cannot
+# access, and its prompt contains reversed Tày mappings (gà/vịt swapped).
+# api_example/ carries assistant IDs and ~10 MB of regenerable dictionary dumps.
+# Publishing broken code with incorrect linguistic data would be worse than
+# omitting it; the approach is described in the README instead.
+simple_code/
+api_example/
+
+# Empty SQLite databases — schema only, never populated
+code/db/
+
+# Test corpora extracted from the dictionary itself. Superseded by
+# eval_translation.py, which builds a proper held-out split.
+code/tay_test_sentences_*.txt
+code/tay_web_test_samples.txt
+
+# Ad-hoc measurement scripts whose published figures are the discredited ones
+code/test_from_excel_translation.py
+code/test_full_sentences_summary.py
+code/test_one_translation.py
+code/test_tay_sentences_log.py
+
+# OS
+Thumbs.db
+.DS_Store

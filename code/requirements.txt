@@ -1,0 +1,26 @@
+# Pinned to the versions this project was developed and benchmarked against.
+# Unused packages were removed: sqlite-utils, moviepy, pytesseract, Pillow and
+# pdfminer.six are never imported, and python-levenshtein was a declared
+# dependency that no code path used.
+
+# Core application
+fastapi==0.139.0
+uvicorn[standard]==0.50.0
+pydantic==2.13.4
+jinja2==3.1.6
+requests==2.34.2
+
+# Dictionary parsing
+pandas==3.0.3
+openpyxl==3.1.5
+
+# Speech, optional. openai-whisper needs ffmpeg on PATH; the translator itself
+# runs without either.
+openai-whisper==20250625
+gTTS==2.2.4
+
+# Config
+python-dotenv==1.2.2
+
+# Tests
+pytest==9.1.1
