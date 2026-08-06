@@ -162,7 +162,21 @@ _DICT_SOURCES = ("dict", "dict-loose", "dict-fuzzy")
 # khớp đủ token nhưng ra kết quả sai hoàn toàn. Nếu phần lớn câu dựa vào các
 # khớp yếu này thì không được phép báo độ tin cậy cao.
 _WEAK_SOURCES = ("dict-loose", "dict-fuzzy")
-_WEAK_SHARE_CAP = 0.5
+
+# Hiệu chỉnh độ tin cậy. Bản đầu chia high/medium theo "câu có khớp được cụm dài
+# nào không" — đo ra tương quan với chrF chỉ -0.010, tức là VÔ NGHĨA, và hai
+# nhóm high/medium gần như trùng nhau (0.405 so với 0.403).
+#
+# Hai tín hiệu thật sự dự báo được (500 câu tách riêng):
+#   tỉ lệ cụm đa nghĩa  -0.234
+#   tỉ lệ khớp yếu      -0.155
+#
+# Sau khi đổi sang risk = 0.6*đa_nghĩa + 0.4*khớp_yếu:
+#   high  chrF 0.564 | medium 0.441 | low 0.304   (khoảng cách +0.260)
+_CONF_W_AMBIGUITY = 0.6
+_CONF_W_WEAK = 0.4
+_CONF_HIGH_RISK = 0.25
+_CONF_MED_RISK = 0.60
 
 
 def _looks_undiacriticized(text: str) -> bool:
@@ -195,8 +209,6 @@ def _build_meta(base: dict) -> dict:
 
     known_terms = [g for g in glossary if g.get("source") in _DICT_SOURCES]
     passthrough_terms = [g for g in glossary if g.get("source") == "common_viet"]
-    has_phrase = any(len(_WORD_RE.findall(t.get("tay") or "")) >= 2 for t in known_terms)
-
     weak_tokens = sum(
         len(_WORD_RE.findall(g.get("tay") or ""))
         for g in glossary
@@ -204,13 +216,28 @@ def _build_meta(base: dict) -> dict:
     )
     weak_share = weak_tokens / max(1, total)
 
-    confidence = "low"
-    if coverage >= HIGH_COVERAGE_THRESHOLD:
-        confidence = "high" if has_phrase else "medium"
-    elif coverage >= LOW_COVERAGE_THRESHOLD:
-        confidence = "medium" if has_phrase else "low"
+    # Tỉ lệ cụm phải chọn giữa nhiều nghĩa khả dĩ — tín hiệu dự báo chất lượng
+    # mạnh nhất đo được (tương quan -0.234 với chrF trên 500 câu tách riêng).
+    # Khớp trúng nguyên CỤM trong từ điển là tín hiệu chắc nhất hệ thống có
+    # (điểm 20 so với 2-5 của nghĩa mức từ); các "phương án khác" của nó chỉ là
+    # cách diễn đạt khác của cùng cụm đó, không phải mơ hồ thật. Nếu tính cả
+    # chúng thì `kin khẩu` -> "ăn cơm" (đúng) lại bị gắn nhãn tin cậy thấp.
+    ambiguous_share = (
+        sum(1 for g in glossary if g.get("alternatives") and g.get("kind") != "phrase")
+        / len(glossary)
+        if glossary
+        else 0.0
+    )
+    risk = _CONF_W_AMBIGUITY * ambiguous_share + _CONF_W_WEAK * weak_share
+
     no_diacritics = _looks_undiacriticized(base.get("preprocessed_input") or "")
-    if weak_share > _WEAK_SHARE_CAP or no_diacritics:
+    if coverage < LOW_COVERAGE_THRESHOLD or no_diacritics:
+        confidence = "low"
+    elif risk < _CONF_HIGH_RISK:
+        confidence = "high"
+    elif risk < _CONF_MED_RISK:
+        confidence = "medium"
+    else:
         confidence = "low"
 
     return {

@@ -154,11 +154,16 @@ def main() -> int:
     # Mô hình ngôn ngữ cũng phải KHÔNG được thấy câu đích của tập kiểm tra.
     # Nếu bỏ bước này, bộ giải mã Viterbi tái tạo gần đúng câu đáp án và chrF
     # nhảy từ 0.395 lên 0.548 — một con số hoàn toàn giả.
-    from translation_api import lm  # noqa: PLC0415
+    from translation_api import align, lm  # noqa: PLC0415
 
     held_out_vi = {(vi or "").strip().lower() for _tay, vi in test}
     lm.build(EXCEL_PATH, exclude_vi=held_out_vi, lock=True)
-    print(f"LM dựng không có {len(held_out_vi)} câu đích kiểm tra: {lm.stats()}\n")
+    print(f"LM dựng không có {len(held_out_vi)} câu đích kiểm tra: {lm.stats()}")
+
+    # Mô hình căn chỉnh cũng học từ chính kho ngữ liệu này, nên cũng phải bị
+    # chặn khỏi tập kiểm tra — nếu không thì lại lặp đúng lỗi rò rỉ cũ.
+    align.build(EXCEL_PATH, exclude_vi=held_out_vi, lock=True)
+    print(f"Mô hình căn chỉnh dựng không có câu kiểm tra: {align.stats()}\n")
 
     from translation_api.retriever import retrieve  # noqa: PLC0415
 

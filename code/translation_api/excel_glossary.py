@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import lm
+from . import align, lm
 from .tay_input_preprocess import preprocess_tay_input
 
 _SPACE_RE = re.compile(r"\s+")
@@ -403,6 +403,17 @@ def _pick_candidate(
 
 
 _MAX_CANDS = 6
+# Mô hình căn chỉnh IBM Model 1 (align.py) MẶC ĐỊNH TẮT — lại là quyết định
+# theo số đo. Trên 500 câu tách riêng (mô hình học KHÔNG có câu kiểm tra):
+#
+#   có ngữ cảnh   : tắt 0.4003 / bật 0.3923   (bật vào thì tệ hơn)
+#   không ngữ cảnh: tắt 0.3857 / bật 0.3867   token-F1 0.4863 -> 0.5034
+#
+# Nghĩa là: xác suất học được THẬT SỰ tốt hơn luật tần suất đặt tay (mẻ->mẹ 0.71
+# thay vì chọn nhầm "cái"), nhưng phần cải thiện đó trùng với việc chọn nghĩa
+# theo ngữ cảnh truy xuất. Khi đã có ngữ cảnh thì thêm nó vào chỉ gây hại.
+ALIGN_ENABLED = os.getenv("ALIGN_MODEL", "0").strip().lower() in ("1", "true", "yes", "on")
+_ALIGN_WEIGHT = float(os.getenv("ALIGN_WEIGHT", "0.60"))
 LM_DECODE = os.getenv("LM_DECODE", "1").strip().lower() in ("1", "true", "yes", "on")
 # Quét trên 500 câu tách riêng (LM dựng KHÔNG có câu đích kiểm tra):
 #   có ngữ cảnh : w=0 -> 0.3954 | w=0.10 -> 0.4003 | w=0.35 -> 0.3974 | w=1.0 -> 0.3930
@@ -413,9 +424,13 @@ _LM_WEIGHT = float(os.getenv("LM_WEIGHT", "0.10"))
 
 
 def _score_candidates(
-    cands: list[dict], targeted: dict[str, float], pooled: frozenset[str]
+    cands: list[dict],
+    targeted: dict[str, float],
+    pooled: frozenset[str],
+    phrase: str = "",
 ) -> list[dict]:
     """Cộng điểm ngữ cảnh cho MỌI ứng viên (bộ giải mã cần cả danh sách, không chỉ top-1)."""
+    use_align = ALIGN_ENABLED and align.is_ready() and phrase
     out: list[dict] = []
     for c in cands[:_MAX_CANDS]:
         toks = [t for t in (x.strip(_PUNCT) for x in _TOKEN_RE.findall(_norm(c["vi"]))) if t]
@@ -427,7 +442,12 @@ def _score_candidates(
             bonus, hit = _CTX_BOOST_POOLED, True
         else:
             bonus, hit = 0.0, False
-        out.append({**c, "adj": c["score"] + bonus, "by_ctx": hit})
+        # Xác suất dịch HỌC ĐƯỢC từ kho song ngữ, thay cho luật tần suất đặt tay.
+        align_term = _ALIGN_WEIGHT * align.score_pair(phrase, c["vi"]) if use_align else 0.0
+        out.append(
+            {**c, "adj": c["score"] + bonus + align_term, "by_ctx": hit,
+             "by_align": bool(use_align and align_term > -3.0)}
+        )
     out.sort(key=lambda x: -x["adj"])
     return out
 
@@ -523,6 +543,11 @@ def translate_with_excel_glossary(
     clean = preprocess_tay_input(raw, common_loose)
 
     _ensure_index(excel_path)
+    if ALIGN_ENABLED:
+        try:
+            align.ensure_model(excel_path)
+        except Exception:
+            pass  # thiếu mô hình căn chỉnh thì vẫn chạy được bằng luật cũ
     index: dict = _CACHE["index"]
     loose: dict = _CACHE["loose"]
     max_ngram = min(max_ngram_cap, int(_CACHE["max_ngram"] or 1))
@@ -557,7 +582,7 @@ def translate_with_excel_glossary(
                 {
                     "tay": " ".join(words[i:i + size]),
                     "source": source,
-                    "cands": _score_candidates(cands, _evidence_for(phrase, ctx), pooled),
+                    "cands": _score_candidates(cands, _evidence_for(phrase, ctx), pooled, phrase),
                 }
             )
             known_tokens += size
@@ -595,7 +620,7 @@ def translate_with_excel_glossary(
                         "tay": token,
                         "source": fz_source,
                         "note": "khớp gần đúng, có thể do gõ sai chính tả",
-                        "cands": _score_candidates(fz_cands, _evidence_for(probe, ctx), pooled),
+                        "cands": _score_candidates(fz_cands, _evidence_for(probe, ctx), pooled, probe),
                     }
                 )
                 known_tokens += 1
