@@ -41,7 +41,7 @@ Tày input
    ↓
 [1] Preprocess         strip dictionary artefacts (~: markers, trailing glosses)
    ↓
-[2] Retrieve           find the 5 most similar Tày sentences among 14,179
+[2] Retrieve           find the 2 most similar Tày sentences among 14,179
                        aligned example pairs (IDF token overlap + char 3-grams)
    ↓
 [3] Lexical match      longest-phrase-first over a 26,436-entry index,
@@ -124,6 +124,36 @@ already right. Hence the low default.
 > memorised answers. `eval_translation.py` now rebuilds the LM with the test
 > targets excluded (`lm.build(..., exclude_vi=..., lock=True)`). Any component
 > learning from the corpus must be held out too — not just the lookup index.
+
+### Learned translation probabilities (IBM Model 1)
+
+`translation_api/align.py` trains IBM Model 1 with Expectation-Maximization on
+the 14,179 sentence pairs, learning P(vietnamese | tày) from data rather than
+from hand-designed frequency rules. Six iterations, ~3 seconds, CPU only.
+
+The learned probabilities are visibly better than the heuristic they replace:
+
+| Tày | learned by EM | hand-tuned heuristic |
+|---|---|---|
+| `mẻ` | **mẹ** (0.71), vợ (0.10), bà (0.09) | "cái" ✗ |
+| `slương` | **thương** (0.25) | "bộ" ✗ |
+| `pỏ` | **bố** (0.37), cha (0.32) | "ba" |
+| `cáy` | gà (0.97) | gà |
+| `nặm` | nước (1.00) | nước |
+
+But end-to-end it does not help, and the reason is informative:
+
+| | chrF | token-F1 |
+|---|---|---|
+| **with** retrieved context, alignment off | **0.4003** | 0.5082 |
+| with retrieved context, alignment on | 0.3923 | 0.5083 |
+| **without** context, alignment off | 0.3857 | 0.4863 |
+| without context, alignment on | 0.3867 | **0.5034** |
+
+Without context the learned model beats the hand-tuned rule (+0.017 token-F1),
+confirming it does its job. With context present it adds nothing and costs chrF —
+the two signals fix the same errors. Disabled by default (`ALIGN_MODEL=1` to
+enable). Its training data is held out during evaluation, exactly like the LM.
 
 ### Retrieval depth
 
@@ -222,7 +252,40 @@ because every fuzzy match is labelled as such in the UI. Disable with
 `FUZZY_MATCH=0`. Note that missing tone marks need no fuzzy matching at all — the
 tone-insensitive index layer already covers the most common typing error.
 
-### Calibration
+### Calibration: validated, not asserted
+
+`calibration_report.py` checks whether reported confidence tracks real quality on
+held-out data, and writes `calibration.svg`.
+
+The first attempt **failed this check**. Confidence separated `high` from
+`medium` by whether any multi-word phrase matched — a signal whose correlation
+with chrF measures **−0.010**, i.e. none. The two buckets were indistinguishable:
+
+| | old rule | **current rule** |
+|---|---|---|
+| high | 0.405 (n=324) | **0.574** (n=54) |
+| medium | 0.403 (n=154) | 0.438 (n=242) |
+| low | 0.307 (n=22) | 0.310 (n=204) |
+| high − low | +0.098 | **+0.264** |
+
+Feature correlations with chrF, measured on 500 held-out sentences:
+
+| feature | correlation |
+|---|---|
+| ambiguous-span fraction | **−0.234** |
+| weak-match fraction | −0.155 |
+| context-chosen fraction | +0.092 |
+| coverage | +0.027 |
+| phrase fraction *(old signal)* | −0.010 |
+
+Confidence is now `risk = 0.6 × ambiguity + 0.4 × weak_matches`, and the buckets
+separate monotonically on both chrF and token-F1. A test enforces this.
+
+Note that coverage is nearly useless as a discriminator here: 497 of 500 held-out
+sentences score 100% coverage, including ones translated badly. Coverage answers
+"did I find these words", not "did I pick the right meanings".
+
+### Calibration guards
 
 The system must never report confidence it hasn't earned. Three guards:
 
@@ -250,6 +313,8 @@ The system must never report confidence it hasn't earned. Three guards:
 | `USE_LLM` | `0` | Enable the Ollama editing pass |
 | `RETRIEVE_K` | `2` | Example sentences retrieved per query |
 | `FUZZY_MATCH` | `1` | Edit-distance fallback for misspellings |
+| `ALIGN_MODEL` | `0` | Learned IBM Model 1 translation probabilities |
+| `ALIGN_WEIGHT` | `0.60` | Weight on learned probabilities when enabled |
 | `LM_DECODE` | `1` | Viterbi sequence decoding with the Vietnamese bigram LM |
 | `LM_WEIGHT` | `0.10` | How much fluency outweighs dictionary score |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama endpoint |

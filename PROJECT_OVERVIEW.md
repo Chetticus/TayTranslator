@@ -1,4 +1,4 @@
-﻿# Tày → Vietnamese Translator
+# Tày → Vietnamese Translator
 
 A working translation system for **Tày**, a Tai-Kadai language spoken by roughly
 1.8 million people in northern Vietnam, built from a single digitised dictionary
@@ -136,7 +136,7 @@ python eval_translation.py --n 80 --llm     # adds the two LLM arms
 
 ## 5. Engineering decisions, and the evidence behind them
 
-Seven findings, most of them *against* intuition, because measurement
+Nine findings, most of them *against* intuition, because measurement
 contradicted expectation.
 
 ### 5.1 Local language models lose to deterministic lookup
@@ -216,7 +216,78 @@ Retrieval depth was swept rather than guessed. More retrieved sentences means
 more irrelevant evidence pushing wrong senses — consistent with the finding
 below that pooled evidence is actively harmful.
 
-### 5.5 Pooled context is worse than no context
+### 5.5 A learned model beat the hand-written rule — and still didn't help
+
+`translation_api/align.py` trains **IBM Model 1 with Expectation-Maximization**
+on the 14,179 sentence pairs, learning P(vietnamese | tày) from data instead of
+from hand-designed frequency rules. The task is unsupervised: the algorithm knows
+which *sentences* correspond but not which *words*, and recovers the word-level
+correspondences by iterating. Six iterations, ~3 seconds, CPU only.
+
+What it learned is markedly better than the rule it was written to replace:
+
+| Tày | learned by EM | hand-tuned heuristic |
+|---|---|---|
+| `mẻ` | **mẹ** (0.71) | "cái" ✗ |
+| `slương` | **thương** (0.25) | "bộ" ✗ |
+| `pỏ` | **bố** (0.37), cha (0.32) | "ba" |
+| `cáy` | gà (0.97) | gà |
+
+End-to-end, though:
+
+| | chrF | token-F1 |
+|---|---|---|
+| **with** retrieved context, alignment off | **0.4003** | 0.5082 |
+| with retrieved context, alignment on | 0.3923 | 0.5083 |
+| **without** context, alignment off | 0.3857 | 0.4863 |
+| without context, alignment on | 0.3867 | **0.5034** |
+
+Without context it beats the hand-tuned rule by +0.017 token-F1, confirming it
+works. With context present it adds nothing and costs chrF. Disabled by default.
+
+This is the third component to fail the same way — a real signal, redundant with
+retrieved context. It suggests context-based disambiguation is close to
+saturating what this dictionary can support, and that further gains need more
+data rather than better scoring of the data already there.
+
+### 5.6 Calibration had to be validated before it could be believed
+
+The claim "the system knows when it doesn't know" was asserted for some time
+before being checked. When checked, it **failed**.
+
+Confidence separated `high` from `medium` by whether any multi-word phrase had
+matched. Measured against held-out chrF, that signal correlates **−0.010** — it
+carries no information, and the two buckets were indistinguishable (0.405 vs
+0.403; `medium` actually scored *higher* on token-F1).
+
+Correlation of observable signals with chrF, 500 held-out sentences:
+
+| feature | correlation |
+|---|---|
+| ambiguous-span fraction | **−0.234** |
+| weak-match fraction | −0.155 |
+| context-chosen fraction | +0.092 |
+| coverage | +0.027 |
+| phrase fraction *(the signal in use)* | −0.010 |
+
+Rebuilt as `risk = 0.6 × ambiguity + 0.4 × weak_matches`:
+
+| | old | **new** |
+|---|---|---|
+| high | 0.405 | **0.574** |
+| medium | 0.403 | 0.438 |
+| low | 0.307 | 0.310 |
+| high − low | +0.098 | **+0.264** |
+
+Now monotonic on chrF *and* token-F1, enforced by a test. `calibration_report.py`
+regenerates the figure.
+
+Worth noting separately: **coverage barely discriminates at all.** 497 of 500
+held-out sentences report 100% coverage, including badly translated ones.
+Coverage answers "did I find these words", not "did I choose the right meanings"
+— which is why the ambiguity signal matters more.
+
+### 5.7 Pooled context is worse than no context
 
 Sense selection was tested with two kinds of evidence: **targeted** (only example
 sentences genuinely containing the word being disambiguated) and **pooled** (any
@@ -233,7 +304,7 @@ Pooled evidence is *harmful* — a retrieved sentence about chickens pushes the
 wrong sense onto an unrelated word. All the gain comes from per-word targeted
 evidence, which is why `_evidence_for()` filters by word rather than by sentence.
 
-### 5.6 Fuzzy matching fixes coverage, not accuracy
+### 5.8 Fuzzy matching fixes coverage, not accuracy
 
 | Corruption | | coverage | unknown/sentence | chrF |
 |---|---|---|---|---|
@@ -248,7 +319,7 @@ every fuzzy match is labelled as such in the interface. It is not claimed as an
 accuracy improvement. Missing tone marks need no fuzzy matching at all: the
 tone-insensitive index layer already covers the most common typing error.
 
-### 5.7 The system must know when it doesn't know
+### 5.9 Calibration guards
 
 The original failure wasn't just poor translation — it was **confident** poor
 translation. Untranslated Tày scored 100% coverage and "high confidence", which
@@ -288,10 +359,9 @@ that the input itself is under-specified.
   phrases rather than natural conversation.
 - **One reference translation per sentence**, so chrF understates acceptable
   paraphrases.
-- **Only one component learns from data.** The Vietnamese bigram model is
-  estimated from the corpus, but translation probabilities themselves still come
-  from hand-designed scoring rules rather than parameters fitted to the data
-  (see next steps).
+- **Learned components exist but one is disabled.** The Vietnamese bigram model is
+  active; the IBM Model 1 alignment model is trained and tested but off by
+  default, being redundant with retrieved context.
 
 ---
 

@@ -151,6 +151,37 @@ def test_language_model_prefers_natural_vietnamese():
     assert lm.logp("thấy", "tiền") > lm.logp("nghe", "tiền")
 
 
+def test_alignment_model_learns_sensible_translations():
+    """
+    IBM Model 1 huấn luyện bằng EM phải học ra nghĩa đúng từ chính kho song ngữ,
+    không cần ai gán nhãn từng từ.
+    """
+    from translation_api import align  # noqa: PLC0415
+
+    align._CACHE["locked"] = False
+    align.build(EXCEL_PATH, iterations=6)
+    assert align.is_ready()
+    assert align.stats()["pairs_trained_on"] > 10000
+
+    for tay, expected in [("cáy", "gà"), ("rườn", "nhà"), ("nặm", "nước"), ("mẻ", "mẹ")]:
+        tops = [e for e, _p in align.top_translations(tay, 3)]
+        assert expected in tops, f"{tay!r} học ra {tops}, thiếu {expected!r}"
+
+
+def test_alignment_model_can_exclude_held_out_sentences():
+    """Mô hình học từ kho ngữ liệu cũng phải bị chặn khỏi tập kiểm tra."""
+    from translation_api import align  # noqa: PLC0415
+
+    pairs = load_example_pairs(EXCEL_PATH)
+    held = {(vi or "").strip().lower() for _t, vi in pairs[:200]}
+    align._CACHE["locked"] = False
+    align.build(EXCEL_PATH, exclude_vi=held, iterations=2, lock=True)
+    reduced = align.stats()["pairs_trained_on"]
+    align._CACHE["locked"] = False
+    align.build(EXCEL_PATH, iterations=2)
+    assert align.stats()["pairs_trained_on"] > reduced
+
+
 def test_lm_can_exclude_held_out_sentences():
     """Nếu LM nhìn thấy câu đích của tập kiểm tra, điểm số sẽ giả tạo."""
     pairs = load_example_pairs(EXCEL_PATH)
@@ -165,6 +196,66 @@ def test_lm_can_exclude_held_out_sentences():
 # --------------------------------------------------------------------------
 # Chốt chặn hồi quy trên tập tách riêng
 # --------------------------------------------------------------------------
+
+@pytest.mark.slow
+def test_confidence_labels_separate_real_quality():
+    """
+    Nhãn độ tin cậy phải PHÂN BIỆT được chất lượng thật, không chỉ tồn tại.
+
+    Bản hiệu chỉnh đầu tiên chia high/medium theo "có khớp được cụm dài không",
+    tương quan với chrF là -0.010 — hai nhóm gần như trùng nhau (0.405 / 0.403).
+    Test này giữ cho lỗi đó không quay lại.
+    """
+    import main  # noqa: PLC0415
+
+    pairs = load_example_pairs(EXCEL_PATH)
+    rng = random.Random(SEED)
+    rng.shuffle(pairs)
+    test = pairs[:EVAL_SAMPLE]
+
+    _ensure_index(EXCEL_PATH)
+    index, loose = _CACHE["index"], _CACHE["loose"]
+    for tay, _vi in test:
+        for bucket, key in ((index, _norm(tay)), (loose, _norm_loose(tay))):
+            lst = bucket.get(key)
+            if not lst:
+                continue
+            keep = [c for c in lst if c.get("kind") != "phrase"]
+            if keep:
+                bucket[key] = keep
+            else:
+                bucket.pop(key, None)
+
+    lm._CACHE["locked"] = False
+    lm.build(EXCEL_PATH, exclude_vi={(vi or "").strip().lower() for _t, vi in test}, lock=True)
+
+    buckets: dict[str, list[float]] = {"high": [], "medium": [], "low": []}
+    for tay, vi in test:
+        hits = retrieve(tay, EXCEL_PATH, k=RETRIEVE_K + 8, exclude={_norm(tay)})
+        ex, gq, gg = [], _clean(tay), _clean(vi)
+        for h in hits:
+            if _clean(h["vi"]) == gg or (gq and gq in _clean(h["tay"])):
+                continue
+            ex.append(h)
+            if len(ex) >= RETRIEVE_K:
+                break
+        base = translate_with_excel_glossary(tay, EXCEL_PATH, context_pairs=ex)
+        buckets[main._build_meta(base)["confidence"]].append(chrf(base["translation"], vi))
+
+    lm._CACHE["locked"] = False
+    _CACHE["path"] = None
+
+    means = {k: (sum(v) / len(v) if v else None) for k, v in buckets.items()}
+    print(f"\ncalibration: {[(k, None if m is None else round(m, 3), len(buckets[k])) for k, m in means.items()]}")
+
+    assert buckets["high"] and buckets["low"], "cần có cả nhóm high và low để so sánh"
+    assert means["high"] > means["low"] + 0.10, (
+        f"nhãn tin cậy không phân biệt được chất lượng: "
+        f"high={means['high']:.3f} vs low={means['low']:.3f}"
+    )
+    if buckets["medium"]:
+        assert means["high"] >= means["medium"], "high phải không thấp hơn medium"
+
 
 @pytest.mark.slow
 def test_held_out_quality_does_not_regress():
