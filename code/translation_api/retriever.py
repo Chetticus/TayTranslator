@@ -25,16 +25,26 @@ import pandas as pd
 
 _TOKEN_RE = re.compile(r"[^\s.,!?;:()\[\]\"'«»…]+")
 
-_CACHE: dict = {
-    "path": None,
-    "mtime": None,
-    "pairs": [],       # list[(tay, vi)]
-    "postings": {},    # token -> list[doc_id]
-    "idf": {},         # token -> idf
-    "doc_tokens": [],  # list[set[str]]
-    "doc_grams": [],   # list[set[str]]
-    "norm_tay": [],    # list[str] khóa chuẩn hóa để loại trừ khi đánh giá
-}
+TAY2VI = "tay2vi"
+VI2TAY = "vi2tay"
+
+
+def _blank() -> dict:
+    return {
+        "path": None,
+        "mtime": None,
+        "pairs": [],       # list[(source, target)] theo chiều đang dùng
+        "postings": {},    # token -> list[doc_id]
+        "idf": {},         # token -> idf
+        "doc_tokens": [],  # list[set[str]]
+        "doc_grams": [],   # list[set[str]]
+        "norm_tay": [],    # khóa nguồn đã chuẩn hóa, để loại trừ khi đánh giá
+    }
+
+
+# Truy xuất phải tra theo phía NGUỒN, nên mỗi chiều cần một chỉ mục riêng.
+_CACHES: dict[str, dict] = {TAY2VI: _blank(), VI2TAY: _blank()}
+_CACHE: dict = _CACHES[TAY2VI]  # bí danh chiều mặc định (sửa tại chỗ)
 
 
 def _norm(text: str) -> str:
@@ -73,13 +83,14 @@ def _iter_example_pairs(excel_path: Path):
                 yield tay.strip(), vi.strip()
 
 
-def ensure_index(excel_path: Path) -> None:
+def ensure_index(excel_path: Path, direction: str = TAY2VI) -> None:
     excel_path = Path(excel_path)
     if not excel_path.exists():
         raise FileNotFoundError(f"Không thấy Excel glossary: {excel_path}")
 
+    cache = _CACHES[direction]
     mtime = excel_path.stat().st_mtime
-    if _CACHE["path"] == str(excel_path) and _CACHE["mtime"] == mtime:
+    if cache["path"] == str(excel_path) and cache["mtime"] == mtime:
         return
 
     pairs: list[tuple[str, str]] = []
@@ -89,7 +100,7 @@ def ensure_index(excel_path: Path) -> None:
         if key in seen:
             continue
         seen.add(key)
-        pairs.append((tay, vi))
+        pairs.append((vi, tay) if direction == VI2TAY else (tay, vi))
 
     postings: dict[str, list[int]] = {}
     doc_tokens: list[set[str]] = []
@@ -107,7 +118,7 @@ def ensure_index(excel_path: Path) -> None:
     n_docs = max(1, len(pairs))
     idf = {t: math.log(1.0 + n_docs / (1.0 + len(ids))) for t, ids in postings.items()}
 
-    _CACHE.update(
+    cache.update(
         path=str(excel_path), mtime=mtime, pairs=pairs, postings=postings,
         idf=idf, doc_tokens=doc_tokens, doc_grams=doc_grams, norm_tay=norm_tay,
     )
@@ -119,15 +130,17 @@ def retrieve(
     k: int = 5,
     exclude: set[str] | None = None,
     min_score: float = 0.12,
+    direction: str = TAY2VI,
 ) -> list[dict]:
     """
     Trả về tối đa `k` cặp câu ví dụ giống `query` nhất.
 
-    `exclude`: tập khóa `_norm(tay)` cần bỏ qua — dùng khi đánh giá để không
-    truy xuất trúng chính câu đang được chấm điểm (nếu không, điểm sẽ ảo).
+    `exclude`: tập khóa nguồn đã chuẩn hóa cần bỏ qua — dùng khi đánh giá để
+    không truy xuất trúng chính câu đang được chấm điểm (nếu không, điểm sẽ ảo).
     """
-    ensure_index(excel_path)
-    pairs = _CACHE["pairs"]
+    ensure_index(excel_path, direction)
+    cache = _CACHES[direction]
+    pairs = cache["pairs"]
     if not pairs:
         return []
 
@@ -135,11 +148,11 @@ def retrieve(
     if not q_tokens:
         return []
     q_grams = _grams(query)
-    idf = _CACHE["idf"]
-    postings = _CACHE["postings"]
-    doc_tokens = _CACHE["doc_tokens"]
-    doc_grams = _CACHE["doc_grams"]
-    norm_tay = _CACHE["norm_tay"]
+    idf = cache["idf"]
+    postings = cache["postings"]
+    doc_tokens = cache["doc_tokens"]
+    doc_grams = cache["doc_grams"]
+    norm_tay = cache["norm_tay"]
     excl = exclude or set()
 
     # Chỉ chấm điểm các câu có chung ít nhất một token -> nhanh hơn quét toàn bộ.
@@ -180,4 +193,4 @@ def retrieve(
 
 def corpus_size(excel_path: Path) -> int:
     ensure_index(excel_path)
-    return len(_CACHE["pairs"])
+    return len(_CACHES[TAY2VI]["pairs"])

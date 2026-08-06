@@ -15,12 +15,21 @@ lexical lookup with sentence retrieval and statistical decoding.
 
 Measured on **500 held-out sentences**, removed from the index before scoring.
 
+**Tày → Việt** — the harder direction, since the dictionary must be inverted:
+
 | Stage | chrF | token-F1 | Exact |
 |---|---|---|---|
 | Early version | 0.104 | 0.077 | 0.0% |
 | Repaired lexical layer | 0.369 | 0.479 | 10.8% |
 | + retrieval-based sense selection | 0.386 | 0.486 | 12.4% |
-| **+ Viterbi decoding with a Vietnamese LM** | **0.400** | **0.508** | **13.0%** |
+| + Viterbi decoding with a Vietnamese LM | 0.400 | 0.508 | 13.0% |
+| **+ phrase table mined from word alignments** | **0.427** | **0.532** | **14.4%** |
+
+**Việt → Tày** — the dictionary's native direction, and materially easier:
+
+| Stage | chrF | token-F1 | Exact |
+|---|---|---|---|
+| **Lookup + Viterbi + mined phrases** | **0.475** | **0.580** | **19.0%** |
 
 Token coverage on unseen input: **99.9%**. Published low-resource MT at this data
 scale typically reports chrF 0.30–0.50.
@@ -89,7 +98,13 @@ Full detail and evidence in **[PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md)**.
   held-out targets. Any component that learns from the corpus has to be held out,
   not just the index.
 - **Fewer retrieved examples beat more** (K=2 > K=5 > K=20), and pooled context
-  is *worse than no context at all*.
+  is *worse than no context at all*. Retrieved context even *hurts* the
+  Việt→Tày direction, where lookup is already unambiguous — the same redundancy
+  pattern that ruled out the LLM and the learned alignment model.
+- **A learned model can be right and still not help.** IBM Model 1 trained with
+  EM recovers better word translations than the hand-written rule (`mẻ` → mẹ at
+  0.71, where the heuristic chose "cái"), but adds nothing on top of retrieved
+  context. It found its real use elsewhere: mining the phrase table.
 - **Calibration matters more than the score.** The system caps confidence when it
   is relying on guesses — including for input typed without tone marks, which
   matches real but different Tày words and produces confident nonsense.

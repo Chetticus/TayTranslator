@@ -26,18 +26,29 @@ _TOKEN_RE = re.compile(r"[^\s.,!?;:()\[\]\"'«»…]+")
 BOS = "<s>"
 EOS = "</s>"
 
-_CACHE: dict = {
-    "path": None,
-    "mtime": None,
-    "uni": {},
-    "bi": {},
-    "total": 0,
-    "vocab": 0,
-    # Khi đánh giá, LM phải được dựng KHÔNG có các câu kiểm tra, nếu không nó
-    # thuộc lòng đáp án và điểm số thành vô nghĩa. `locked` giữ cho bản LM đã
-    # loại trừ đó không bị dựng lại bằng toàn bộ dữ liệu.
-    "locked": False,
-}
+VI = "vi"
+TAY = "tay"
+
+
+def _blank() -> dict:
+    return {
+        "path": None,
+        "mtime": None,
+        "uni": {},
+        "bi": {},
+        "total": 0,
+        "vocab": 0,
+        # Khi đánh giá, LM phải được dựng KHÔNG có các câu kiểm tra, nếu không nó
+        # thuộc lòng đáp án và điểm số thành vô nghĩa. `locked` giữ cho bản LM đã
+        # loại trừ đó không bị dựng lại bằng toàn bộ dữ liệu.
+        "locked": False,
+    }
+
+
+# Một LM cho mỗi phía: dịch sang tiếng Việt cần LM tiếng Việt, dịch sang tiếng
+# Tày cần LM tiếng Tày.
+_CACHES: dict[str, dict] = {VI: _blank(), TAY: _blank()}
+_CACHE: dict = _CACHES[VI]  # bí danh cho phía mặc định (sửa tại chỗ, không gán lại)
 
 # Trọng số nội suy: P(w2|w1) = LAMBDA*P_bigram + (1-LAMBDA)*P_unigram
 _LAMBDA = 0.75
@@ -47,13 +58,19 @@ def tokenize(text: str) -> list[str]:
     return [t for t in (x.strip("-–—") for x in _TOKEN_RE.findall((text or "").lower())) if t]
 
 
-def build(excel_path: Path, exclude_vi: set[str] | None = None, lock: bool = False) -> None:
+def build(
+    excel_path: Path,
+    exclude_vi: set[str] | None = None,
+    lock: bool = False,
+    side: str = VI,
+) -> None:
     """
-    Dựng LM bigram từ phía tiếng Việt của kho ví dụ.
+    Dựng LM bigram từ một phía của kho ví dụ.
 
-    `exclude_vi`: tập câu tiếng Việt (đã chuẩn hóa lower/strip) phải BỎ QUA.
-    Bắt buộc dùng khi đánh giá — nếu để LM nhìn thấy câu đích của tập kiểm tra,
-    nó sẽ tái tạo lại đúng câu đó và điểm số tăng vọt một cách giả tạo.
+    `exclude_vi`: tập câu tiếng Việt (đã chuẩn hóa lower/strip) phải BỎ QUA — loại
+    theo phía Việt ở cả hai chiều, vì đó là thứ định danh một cặp bị giữ lại.
+    Bắt buộc dùng khi đánh giá: nếu LM nhìn thấy câu đích của tập kiểm tra, nó sẽ
+    tái tạo lại đúng câu đó và điểm số tăng vọt một cách giả tạo.
     """
     excel_path = Path(excel_path)
     if not excel_path.exists():
@@ -67,12 +84,16 @@ def build(excel_path: Path, exclude_vi: set[str] | None = None, lock: bool = Fal
     total = 0
     seen: set[str] = set()
 
-    for _tay, vi in _iter_example_pairs(excel_path):
-        key = (vi or "").strip().lower()
-        if not key or key in seen or key in drop:
+    for tay, vi in _iter_example_pairs(excel_path):
+        vi_key = (vi or "").strip().lower()
+        if not vi_key or vi_key in drop:
+            continue
+        text = tay if side == TAY else vi
+        key = (text or "").strip().lower()
+        if not key or key in seen:
             continue
         seen.add(key)
-        toks = [BOS] + tokenize(vi) + [EOS]
+        toks = [BOS] + tokenize(text) + [EOS]
         if len(toks) <= 2:
             continue
         for t in toks:
@@ -81,28 +102,30 @@ def build(excel_path: Path, exclude_vi: set[str] | None = None, lock: bool = Fal
         for a, b in zip(toks, toks[1:]):
             bi[(a, b)] = bi.get((a, b), 0) + 1
 
-    _CACHE.update(
+    _CACHES[side].update(
         path=str(excel_path), mtime=excel_path.stat().st_mtime, uni=uni, bi=bi,
         total=max(1, total), vocab=max(1, len(uni)), locked=lock,
     )
 
 
-def ensure_lm(excel_path: Path) -> None:
+def ensure_lm(excel_path: Path, side: str = VI) -> None:
     excel_path = Path(excel_path)
-    if _CACHE["locked"]:
+    cache = _CACHES[side]
+    if cache["locked"]:
         return
     if not excel_path.exists():
         raise FileNotFoundError(f"Không thấy Excel glossary: {excel_path}")
     mtime = excel_path.stat().st_mtime
-    if _CACHE["path"] == str(excel_path) and _CACHE["mtime"] == mtime:
+    if cache["path"] == str(excel_path) and cache["mtime"] == mtime:
         return
-    build(excel_path)
+    build(excel_path, side=side)
 
 
-def logp(prev: str, cur: str) -> float:
+def logp(prev: str, cur: str, side: str = VI) -> float:
     """log P(cur | prev), nội suy bigram với unigram, có làm mượt add-1."""
-    uni, bi = _CACHE["uni"], _CACHE["bi"]
-    total, vocab = _CACHE["total"], _CACHE["vocab"]
+    cache = _CACHES[side]
+    uni, bi = cache["uni"], cache["bi"]
+    total, vocab = cache["total"], cache["vocab"]
 
     p_uni = (uni.get(cur, 0) + 1.0) / (total + vocab)
     prev_count = uni.get(prev, 0)
@@ -114,25 +137,26 @@ def logp(prev: str, cur: str) -> float:
     return math.log(max(p, 1e-12))
 
 
-def sequence_logp(tokens: list[str], prev: str = BOS) -> float:
+def sequence_logp(tokens: list[str], prev: str = BOS, side: str = VI) -> float:
     """Điểm trôi chảy của một chuỗi token, nối tiếp sau `prev`."""
     if not tokens:
         return 0.0
     s = 0.0
     p = prev
     for t in tokens:
-        s += logp(p, t)
+        s += logp(p, t, side)
         p = t
     return s
 
 
-def is_ready() -> bool:
-    return bool(_CACHE["uni"])
+def is_ready(side: str = VI) -> bool:
+    return bool(_CACHES[side]["uni"])
 
 
-def stats() -> dict:
+def stats(side: str = VI) -> dict:
+    cache = _CACHES[side]
     return {
-        "unigrams": len(_CACHE["uni"]),
-        "bigrams": len(_CACHE["bi"]),
-        "tokens": _CACHE["total"],
+        "unigrams": len(cache["uni"]),
+        "bigrams": len(cache["bi"]),
+        "tokens": cache["total"],
     }

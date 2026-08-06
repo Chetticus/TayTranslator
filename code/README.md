@@ -88,13 +88,61 @@ token-F1, and exact match.
 
 ### Results — 500 held-out sentences, no LLM
 
+**Tày → Việt** (the harder direction: the dictionary must be inverted)
+
 | Arm | chrF | token-F1 | Exact |
 |---|---|---|---|
 | Original code (before fixes) | 0.104 | 0.077 | 0.0% |
-| Lookup only | 0.386 | 0.486 | 12.4% |
-| **Lookup + context + Viterbi decoding** | **0.400** | **0.508** | **13.0%** |
+| Lookup only | 0.414 | 0.514 | 13.8% |
+| **Lookup + context + Viterbi + mined phrases** | **0.427** | **0.532** | **14.4%** |
 
-Context changes ~660 sense decisions per 500 sentences.
+**Việt → Tày** (the dictionary's native direction)
+
+| Arm | chrF | token-F1 | Exact |
+|---|---|---|---|
+| **Lookup + Viterbi + mined phrases** | **0.475** | **0.580** | **19.0%** |
+| + retrieved-context sense selection | 0.461 | 0.571 | 16.4% |
+
+```bash
+python eval_translation.py --n 500 --direction vi2tay
+```
+
+Việt→Tày scores materially higher, which is expected: each Vietnamese headword
+has only a few Tày glosses, whereas inverting the dictionary makes almost every
+Tày word ambiguous.
+
+The reversal on the second row is the interesting part — **retrieved context
+*hurts* the native direction**. When lookup is already unambiguous, context only
+adds noise, so the API skips retrieval for `vi2tay`. Same redundancy pattern seen
+with the LLM, the language model and the alignment model.
+
+### Mined phrase table
+
+Many Tày compounds do not decompose: `mẻn slua` means "thất bại" as a unit, so
+word-by-word assembly produces "ăn thua". `translation_api/phrases.py` recovers
+these by **phrase extraction from word alignments** — the standard statistical MT
+technique. It uses the IBM Model 1 alignment to link words, then keeps every
+contiguous span pair consistent with that alignment and seen at least twice.
+
+1,170 Tày phrases extracted, and they are real non-decomposable compounds:
+
+| Tày phrase | Vietnamese | seen |
+|---|---|---|
+| `kin phuối` | ăn nói | 62 |
+| `slửa khóa` | quần áo | 60 |
+| `tua cần` | con người | 42 |
+| `rườn lảng` | nhà cửa | 31 |
+| `khen kha` | chân tay | 22 |
+
+This was the largest single gain after the original data-layer repair:
+**chrF 0.400 → 0.423**. Thresholds were swept rather than guessed (minimum count
+1→0.4199, **2→0.4235**, 3→0.4208, 5→0.4134). Mined phrases score 18, deliberately
+below the 20 given to verbatim dictionary examples: mined phrases are *inferred*,
+dictionary examples are *attested*, so attested evidence wins ties.
+
+Note this gives the alignment model a real job even though it is disabled for
+sense scoring — it turned out to be the wrong tool for ranking senses and the
+right tool for finding phrases.
 
 ### Sequence decoding with a Vietnamese language model
 
@@ -263,10 +311,10 @@ with chrF measures **−0.010**, i.e. none. The two buckets were indistinguishab
 
 | | old rule | **current rule** |
 |---|---|---|
-| high | 0.405 (n=324) | **0.574** (n=54) |
-| medium | 0.403 (n=154) | 0.438 (n=242) |
-| low | 0.307 (n=22) | 0.310 (n=204) |
-| high − low | +0.098 | **+0.264** |
+| high | 0.405 (n=324) | **0.632** (n=94) |
+| medium | 0.403 (n=154) | 0.453 (n=260) |
+| low | 0.307 (n=22) | 0.289 (n=146) |
+| high − low | +0.098 | **+0.343** |
 
 Feature correlations with chrF, measured on 500 held-out sentences:
 
@@ -315,6 +363,8 @@ The system must never report confidence it hasn't earned. Three guards:
 | `FUZZY_MATCH` | `1` | Edit-distance fallback for misspellings |
 | `ALIGN_MODEL` | `0` | Learned IBM Model 1 translation probabilities |
 | `ALIGN_WEIGHT` | `0.60` | Weight on learned probabilities when enabled |
+| `MINED_PHRASES` | `1` | Phrase table extracted from word alignments |
+| `MINED_PHRASE_SCORE` | `18.0` | Rank of mined phrases (below attested examples at 20) |
 | `LM_DECODE` | `1` | Viterbi sequence decoding with the Vietnamese bigram LM |
 | `LM_WEIGHT` | `0.10` | How much fluency outweighs dictionary score |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama endpoint |

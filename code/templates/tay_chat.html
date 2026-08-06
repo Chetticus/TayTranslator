@@ -209,11 +209,15 @@
     .topbar {
       border-bottom: 1px solid var(--border);
       padding: 0.7rem 1.1rem;
-      display: flex; align-items: center; justify-content: space-between; gap: 0.8rem;
+      display: flex; align-items: center; gap: 0.7rem;
+      flex-wrap: wrap;
       background: rgba(13, 18, 30, 0.72);
       backdrop-filter: blur(8px);
     }
-    .topbar-left { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
+    /* Ba khối trên thanh trên cùng: tiêu đề co được, hai khối kia không bị bóp. */
+    .topbar-left { display: flex; align-items: center; gap: 0.6rem; min-width: 0; flex: 1 1 auto; }
+    .topbar-left > div { min-width: 0; }
+    .topbar h1, .topbar p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .topbar h1 { margin: 0; font-size: 1rem; font-weight: 700; }
     .topbar p { margin: 0.1rem 0 0; color: var(--faint); font-size: 0.79rem; }
     .drawer-btn {
@@ -224,6 +228,33 @@
       background: var(--panel);
       color: var(--text);
       font-size: 1.05rem; cursor: pointer;
+    }
+
+    .dir-switch {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      background: var(--bg-soft);
+      border-radius: 999px;
+      padding: 2px;
+      margin-left: auto;
+      flex: 0 0 auto;
+    }
+    .dir-opt {
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.77rem;
+      font-weight: 600;
+      padding: 0.3rem 0.7rem;
+      border-radius: 999px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.14s ease, color 0.14s ease;
+    }
+    .dir-opt:hover { color: var(--text); }
+    .dir-opt.active {
+      background: linear-gradient(160deg, var(--indigo) 0%, #4f46e5 100%);
+      color: #fff;
     }
 
     .status-pill {
@@ -554,8 +585,12 @@
       .chat-scroll { padding: 1rem 0.75rem 0.5rem; }
       .input-wrap { padding: 0.6rem 0.75rem 0.8rem; }
       .row-inner { max-width: 100%; }
+      .topbar { padding: 0.6rem 0.75rem; gap: 0.45rem; }
       .topbar p { display: none; }
+      .topbar h1 { font-size: 0.92rem; }
       .status-pill .status-text { display: none; }
+      .status-pill { padding: 0.3rem 0.5rem; }
+      .dir-opt { font-size: 0.72rem; padding: 0.28rem 0.5rem; }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -593,6 +628,10 @@
             <h1>Trợ lý dịch tiếng Tày</h1>
             <p>Tra từ điển trước, mô hình chỉ biên tập lại cho mượt</p>
           </div>
+        </div>
+        <div class="dir-switch" id="dirSwitch" role="group" aria-label="Chiều dịch">
+          <button type="button" class="dir-opt active" data-dir="tay2vi">Tày → Việt</button>
+          <button type="button" class="dir-opt" data-dir="vi2tay">Việt → Tày</button>
         </div>
         <div class="status-pill" id="statusPill" title="Trạng thái hệ thống">
           <span class="status-dot"></span>
@@ -656,6 +695,7 @@
       let sessions = [];
       let currentId = "";
       let historyQuery = "";
+      let direction = "tay2vi";
 
       const appEl = document.querySelector(".app");
       const chatScroll = document.getElementById("chatScroll");
@@ -1163,7 +1203,7 @@
         var res = await fetch("/api/translate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: question }),
+          body: JSON.stringify({ message: question, direction: direction }),
           signal: signal
         });
         var data = await res.json().catch(function () { return null; });
@@ -1239,6 +1279,35 @@
       collapseSidebarBtn.addEventListener("click", function () {
         saveSidebarCollapsed(appEl.classList.toggle("sidebar-collapsed"));
       });
+      document.querySelectorAll(".dir-opt").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          if (direction === btn.getAttribute("data-dir")) return;
+          direction = btn.getAttribute("data-dir") || "tay2vi";
+          var samples = direction === "tay2vi"
+            ? [["kin khẩu", "ăn cơm"], ["pây tàng", "đi đường"],
+               ["te pây dá lò?", "nó đi rồi à?"], ["ỏ mẻ mà dá", "a mẹ đã về"]]
+            : [["ăn cơm", "kin khẩu"], ["con gà", "tua cáy"],
+               ["tôi đi chơi", "khỏi pây liểu"], ["nhà", "rườn"]];
+          document.querySelectorAll(".suggest-card").forEach(function (card, i) {
+            if (!samples[i]) return;
+            card.setAttribute("data-q", samples[i][0]);
+            card.setAttribute("aria-label", "Thử câu: " + samples[i][0] + " — " + samples[i][1]);
+            card.querySelector(".suggest-tay").textContent = samples[i][0];
+            card.querySelector(".suggest-vi").textContent = samples[i][1];
+          });
+          document.querySelectorAll(".dir-opt").forEach(function (b) {
+            b.classList.toggle("active", b === btn);
+          });
+          try { localStorage.setItem("tay_viet_direction", direction); } catch (e) {}
+          var t2v = direction === "tay2vi";
+          inputEl.placeholder = t2v ? "Nhập câu tiếng Tày..." : "Nhập câu tiếng Việt...";
+          inputEl.setAttribute("aria-label", t2v ? "Câu tiếng Tày" : "Câu tiếng Việt");
+          document.querySelector(".topbar h1").textContent =
+            t2v ? "Trợ lý dịch tiếng Tày" : "Trợ lý dịch sang tiếng Tày";
+          if (micBtn) micBtn.classList.toggle("hidden", !t2v);
+          inputEl.focus();
+        });
+      });
       drawerBtn.addEventListener("click", openDrawer);
       backdrop.addEventListener("click", closeDrawer);
       document.addEventListener("keydown", function (e) {
@@ -1267,6 +1336,13 @@
       if (loadSidebarCollapsed()) appEl.classList.add("sidebar-collapsed");
       refreshMicState();
       refreshStatus();
+      try {
+        var savedDir = localStorage.getItem("tay_viet_direction");
+        if (savedDir === "vi2tay") {
+          var b = document.querySelector('.dir-opt[data-dir="vi2tay"]');
+          if (b) b.click();
+        }
+      } catch (e) {}
     })();
   </script>
 </body>
