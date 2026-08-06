@@ -87,7 +87,8 @@ and sentence-level fluency are what resolve it.
 
 ## Selected findings
 
-Full detail and evidence in **[PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md)**.
+Full detail and evidence in **[TECHNICAL.md](TECHNICAL.md)**. For a
+plain-language description, see **[OVERVIEW.md](OVERVIEW.md)**.
 
 - **Local LLMs lose to deterministic lookup.** Both `gemma3:4b` and
   `qwen2.5:7b-instruct` scored *below* the dictionary layer across 8 measured
@@ -120,10 +121,11 @@ Full detail and evidence in **[PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md)**.
 
 | Path | Contents |
 |---|---|
+| **[OVERVIEW.md](OVERVIEW.md)** | Plain-language description — start here if you don't code |
+| **[TECHNICAL.md](TECHNICAL.md)** | Architecture, methodology, all nine measured findings |
+| [code/README.md](code/README.md) | Runtime detail, configuration, full benchmark tables |
+| [DATA.md](DATA.md) | Data provenance and licensing |
 | `code/` | Application, retrieval, decoding, evaluation harness, tests |
-| `code/README.md` | Technical documentation and full benchmark tables |
-| `PROJECT_OVERVIEW.md` | Problem framing, methodology, findings |
-| `DATA.md` | Data provenance and licensing |
 
 ---
 

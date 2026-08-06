@@ -430,22 +430,30 @@ The system must never report confidence it hasn't earned. Three guards:
 Active code is `main.py`, `translation_api/{excel_glossary,retriever,tay_input_preprocess,stt}.py`,
 and `eval_translation.py`.
 
-Present but not used by the running app, kept for reference:
+Every module here is used by the running application or its evaluation. Earlier
+work has been removed rather than left lying around; it remains in git history if
+anyone wants to see it.
 
-- `translation_api/main.py`, `main_simple.py` — a second FastAPI app that queries
-  `db/*.db`; those databases were never populated, so it returns nothing
-- `translation_api/rag.py` — despite the name, `fetch_examples()` never receives
-  the query and returns random rows; superseded by `retriever.py`
-- `translation_api/offline_translate.py` — unreferenced duplicate of the matcher
+Removed, and why:
+
+- `translation_api/{main,main_simple}.py` — a second FastAPI app querying three
+  SQLite databases that were never populated, so it returned nothing
+- `translation_api/rag.py` — despite the name, `fetch_examples()` never received
+  the query and returned random rows; superseded by `retriever.py`
+- `translation_api/{offline_translate,nlp_gpt,tts}.py` — an unreferenced duplicate
+  matcher, an unused OpenAI path, and a text-to-speech helper never wired to
+  anything (and Vietnamese-only, so of no use for Tày output)
 - `pdf_to_dictionary/`, `speech_to_corpus/` — ingestion pipelines that were never
-  successfully run
-
-Excluded from the repository (see `.gitignore`):
-
-- `simple_code/`, `api_example/` — earlier Vietnamese→Tày prototypes on the
-  OpenAI Assistants API. Neither is runnable: `simple_code/` depends on file IDs
-  belonging to an account it cannot access, and its prompt contains reversed Tày
-  mappings. Shipping broken code with incorrect linguistic data would be worse
-  than describing the approach in prose.
-- The empty `db/` schemas, the dictionary-derived test corpora, and the ad-hoc
-  scripts that produced the discredited accuracy figures.
+  successfully run. The PDF parser assumed one entry per line, which the
+  multi-column scan does not satisfy; the speech pipeline asked a model to invent
+  Vietnamese for Tày audio it could not understand and wrote the guesses to the
+  corpus as if they were data
+- The old test files, which asserted return *types* and stayed green while the
+  system could not translate anything
+- `tay_viet_system_diagram.png` — depicted an architecture the project no longer
+  has; see the diagram in [TECHNICAL.md](../TECHNICAL.md) instead
+- `simple_code/`, `api_example/` — earlier Vietnamese→Tày prototypes on the OpenAI
+  Assistants API. Neither is runnable: `simple_code/` depends on file IDs from an
+  account it cannot access, and its prompt contains reversed Tày mappings
+  (gà/vịt swapped). Shipping broken code carrying incorrect linguistic data
+  would be worse than describing the approach in prose.
