@@ -93,15 +93,52 @@ token-F1, and exact match.
 | Arm | chrF | token-F1 | Exact |
 |---|---|---|---|
 | Original code (before fixes) | 0.104 | 0.077 | 0.0% |
-| Lookup only | 0.414 | 0.514 | 13.8% |
-| **Lookup + context + Viterbi + mined phrases** | **0.427** | **0.532** | **14.4%** |
+| Lookup only | 0.428 | 0.527 | 15.4% |
+| **Lookup + context + Viterbi + mined phrases** | **0.441** | **0.544** | **16.2%** |
 
 **Việt → Tày** (the dictionary's native direction)
 
 | Arm | chrF | token-F1 | Exact |
 |---|---|---|---|
-| **Lookup + Viterbi + mined phrases** | **0.475** | **0.580** | **19.0%** |
-| + retrieved-context sense selection | 0.461 | 0.571 | 16.4% |
+| **Lookup + Viterbi + mined phrases** | **0.471** | **0.579** | **18.2%** |
+| + retrieved-context sense selection | 0.463 | 0.574 | 16.2% |
+
+### Multiple reference translations
+
+Scoring against a single reference is unfairly harsh. "lời nói bóng bẩy" scores
+0.43 against "Câu văn bóng bẩy" despite being a defensible translation of the
+same Tày sentence.
+
+The corpus already contains several Vietnamese renderings for some Tày sentences,
+so `build_reference_map()` collects them and scoring takes the best match across
+all of them — a standard multi-reference setup requiring no manual annotation.
+39 of 500 Tày→Việt test sentences have more than one valid reference (11 of 500
+in the other direction).
+
+This raised Tày→Việt from 0.427 to **0.441**. It *lowered* Việt→Tày from 0.481 to
+**0.471**, and that decrease is a correction rather than a regression: holding out
+a test sentence now removes **every** Vietnamese rendering of it from the language
+model, alignment model and phrase table. Previously an alternate rendering could
+remain in training, which is the same leakage this project has now caught three
+times.
+
+### Where the remaining error is
+
+Failure modes on 400 held-out sentences:
+
+| Mode | Share |
+|---|---|
+| **Wrong sense chosen** | **49.2%** |
+| Mostly wrong | 35.8% |
+| Exactly right | 14.0% |
+| Right words, wrong order | 0.8% |
+| Word missing from dictionary | 0.2% |
+
+Word order and coverage are effectively solved. Roughly 85% of remaining error is
+choosing the wrong meaning — which is why five separate disambiguation signals
+were tried, and why they all saturate: the information needed to choose is not
+present in a dictionary whose examples show words in isolation rather than in
+discourse context.
 
 ```bash
 python eval_translation.py --n 500 --direction vi2tay

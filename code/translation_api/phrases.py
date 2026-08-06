@@ -42,50 +42,92 @@ def _tokens(text: str) -> list[str]:
     return [t for t in (x.strip("-–—") for x in _TOKEN_RE.findall((text or "").lower())) if t]
 
 
-def _align_sentence(f_toks: list[str], e_toks: list[str]) -> list[int | None]:
+def _align_points(f_toks: list[str], e_toks: list[str]) -> set[tuple[int, int]]:
     """
-    Với mỗi từ tiếng Việt, chọn từ Tày có P(việt|tày) cao nhất trong câu.
+    Căn chỉnh đối xứng hai chiều bằng grow-diag-final.
 
-    Đây là căn chỉnh Viterbi của IBM Model 1: đơn giản, nhiều-về-một, nhưng đủ
-    tốt để trích cụm.
+    Một chiều chỉ cho căn chỉnh nhiều-về-một, bỏ sót nhiều liên kết. Cách chuẩn
+    của dịch máy thống kê là chạy cả hai chiều rồi hợp nhất: lấy GIAO làm nhân
+    (độ chính xác cao), sau đó mở rộng dần sang các điểm kề trong HỢP (tăng độ
+    phủ). Bảng cụm trích ra từ đó chính xác hơn hẳn.
     """
     from . import align  # tránh vòng import
 
-    out: list[int | None] = []
-    for e in e_toks:
+    # Chiều thuận: mỗi từ Việt chọn từ Tày khớp nhất.
+    a_fwd: set[tuple[int, int]] = set()
+    for j, e in enumerate(e_toks):
         best_i, best_p = None, 0.0
         for i, f in enumerate(f_toks):
             p = align.prob(f, e)
             if p > best_p:
                 best_i, best_p = i, p
-        out.append(best_i if best_p > 0.0 else None)
-    return out
+        if best_i is not None:
+            a_fwd.add((best_i, j))
+
+    # Chiều ngược: mỗi từ Tày chọn từ Việt khớp nhất.
+    a_rev: set[tuple[int, int]] = set()
+    for i, f in enumerate(f_toks):
+        best_j, best_p = None, 0.0
+        for j, e in enumerate(e_toks):
+            p = align.prob_rev(e, f)
+            if p > best_p:
+                best_j, best_p = j, p
+        if best_j is not None:
+            a_rev.add((i, best_j))
+
+    inter, union = a_fwd & a_rev, a_fwd | a_rev
+    alignment = set(inter)
+    if not alignment:
+        return union
+
+    neighbours = ((-1, 0), (0, -1), (1, 0), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1))
+
+    def grow() -> None:
+        added = True
+        while added:
+            added = False
+            for i, j in list(alignment):
+                for di, dj in neighbours:
+                    ni, nj = i + di, j + dj
+                    if not (0 <= ni < len(f_toks) and 0 <= nj < len(e_toks)):
+                        continue
+                    if (ni, nj) in alignment or (ni, nj) not in union:
+                        continue
+                    f_free = all(p[0] != ni for p in alignment)
+                    e_free = all(p[1] != nj for p in alignment)
+                    if f_free or e_free:
+                        alignment.add((ni, nj))
+                        added = True
+
+    grow()
+    # FINAL: bổ sung các liên kết mà cả hai đầu đều còn trống.
+    for candidate in (a_fwd, a_rev):
+        for ni, nj in candidate:
+            if (ni, nj) in alignment:
+                continue
+            if all(p[0] != ni for p in alignment) and all(p[1] != nj for p in alignment):
+                alignment.add((ni, nj))
+    return alignment
 
 
-def _extract(f_toks: list[str], e_toks: list[str], a: list[int | None]):
+def _extract(f_toks: list[str], e_toks: list[str], alignment: set[tuple[int, int]]):
     """
-    Liệt kê các cặp span nhất quán với căn chỉnh.
+    Liệt kê các cặp span NHẤT QUÁN với căn chỉnh.
 
-    Một cặp (span Tày, span Việt) là hợp lệ khi mọi từ Việt trong span Việt hoặc
-    chưa được căn chỉnh, hoặc trỏ vào đúng span Tày — và span Tày phải được ít
-    nhất một từ Việt trong span đó trỏ tới.
+    Hợp lệ khi không có liên kết nào bắc từ trong span ra ngoài span, ở cả hai
+    phía, và có ít nhất một liên kết nằm trong.
     """
     n_f, n_e = len(f_toks), len(e_toks)
     for j1 in range(n_e):
         for j2 in range(j1, min(n_e, j1 + MAX_SPAN)):
-            linked = [a[j] for j in range(j1, j2 + 1) if a[j] is not None]
-            if not linked:
+            linked_i = [i for i, j in alignment if j1 <= j <= j2]
+            if not linked_i:
                 continue
-            i_lo, i_hi = min(linked), max(linked)
+            i_lo, i_hi = min(linked_i), max(linked_i)
             if i_hi - i_lo + 1 > MAX_SPAN:
                 continue
-            # Không từ Việt nào NGOÀI span được trỏ vào trong [i_lo, i_hi]
-            leaks = any(
-                a[j] is not None and i_lo <= a[j] <= i_hi
-                for j in range(n_e)
-                if j < j1 or j > j2
-            )
-            if leaks:
+            # Không liên kết nào từ [i_lo, i_hi] trỏ ra ngoài [j1, j2]
+            if any(i_lo <= i <= i_hi and not (j1 <= j <= j2) for i, j in alignment):
                 continue
             yield (" ".join(f_toks[i_lo : i_hi + 1]), " ".join(e_toks[j1 : j2 + 1]))
 
@@ -120,7 +162,7 @@ def build(
         if not f_toks or not e_toks:
             continue
         n_pairs += 1
-        a = _align_sentence(f_toks, e_toks)
+        a = _align_points(f_toks, e_toks)
         for f_phrase, e_phrase in _extract(f_toks, e_toks, a):
             # Chỉ giữ cụm THẬT SỰ đa từ ở phía Tày — cụm một từ đã có trong từ điển.
             if " " not in f_phrase:

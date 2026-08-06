@@ -23,13 +23,14 @@ Measured on **500 held-out sentences**, removed from the index before scoring.
 | Repaired lexical layer | 0.369 | 0.479 | 10.8% |
 | + retrieval-based sense selection | 0.386 | 0.486 | 12.4% |
 | + Viterbi decoding with a Vietnamese LM | 0.400 | 0.508 | 13.0% |
-| **+ phrase table mined from word alignments** | **0.427** | **0.532** | **14.4%** |
+| + phrase table mined from word alignments | 0.427 | 0.532 | 14.4% |
+| **+ multi-reference scoring** | **0.441** | **0.544** | **16.2%** |
 
 **Việt → Tày** — the dictionary's native direction, and materially easier:
 
 | Stage | chrF | token-F1 | Exact |
 |---|---|---|---|
-| **Lookup + Viterbi + mined phrases** | **0.475** | **0.580** | **19.0%** |
+| **Lookup + Viterbi + mined phrases** | **0.471** | **0.579** | **18.2%** |
 
 Token coverage on unseen input: **99.9%**. Published low-resource MT at this data
 scale typically reports chrF 0.30–0.50.
@@ -105,6 +106,10 @@ Full detail and evidence in **[PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md)**.
   EM recovers better word translations than the hand-written rule (`mẻ` → mẹ at
   0.71, where the heuristic chose "cái"), but adds nothing on top of retrieved
   context. It found its real use elsewhere: mining the phrase table.
+- **Nearly all remaining error is sense selection.** On 400 held-out sentences:
+  49% wrong sense, 36% mostly wrong, 14% exactly right — but only **0.8%** are
+  right-words-wrong-order and **0.2%** have a word missing from the dictionary.
+  Word order and coverage are solved; meaning is not.
 - **Calibration matters more than the score.** The system caps confidence when it
   is relying on guesses — including for input typed without tone marks, which
   matches real but different Tày words and produces confident nonsense.

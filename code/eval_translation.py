@@ -94,6 +94,37 @@ def token_f1(hyp: str, ref: str) -> float:
     return 2 * p * rc / (p + rc)
 
 
+def build_reference_map(pairs: list[tuple[str, str]], direction: str) -> dict[str, list[str]]:
+    """
+    Gom MỌI bản dịch được coi là đúng cho cùng một câu nguồn.
+
+    Chấm điểm với một đáp án duy nhất là quá khắt khe: "lời nói bóng bẩy" chỉ
+    được 0.43 so với "Câu văn bóng bẩy" dù cả hai đều là bản dịch hợp lệ. Chính
+    kho ngữ liệu đã chứa nhiều cách dịch khác nhau cho cùng một câu, nên gom lại
+    là cách mở rộng đáp án mà không cần gán nhãn tay.
+    """
+    refs: dict[str, set[str]] = {}
+    for tay, vi in pairs:
+        src, tgt = (vi, tay) if direction == "vi2tay" else (tay, vi)
+        key = _norm(src)
+        if key and tgt:
+            refs.setdefault(key, set()).add(tgt.strip())
+    return {k: sorted(v) for k, v in refs.items()}
+
+
+def best_chrf(hyp: str, refs: list[str]) -> float:
+    return max((chrf(hyp, r) for r in refs), default=0.0)
+
+
+def best_f1(hyp: str, refs: list[str]) -> float:
+    return max((token_f1(hyp, r) for r in refs), default=0.0)
+
+
+def matches_any(hyp: str, refs: list[str]) -> bool:
+    h = _clean(hyp)
+    return any(h == _clean(r) for r in refs)
+
+
 def load_example_pairs(excel_path: Path) -> list[tuple[str, str]]:
     """Lấy toàn bộ cặp ví dụ (Tày, Việt) từ từ điển."""
     df = pd.read_excel(excel_path)
@@ -134,10 +165,22 @@ def main() -> int:
     sample = pairs[: args.n]
     # `load_example_pairs` trả (tày, việt). Chiều vi2tay thì đảo lại: nguồn là
     # tiếng Việt, đích là tiếng Tày.
-    held_out_vi = {(vi or "").strip().lower() for _tay, vi in sample}
     test = [(vi, tay) for tay, vi in sample] if direction == "vi2tay" else list(sample)
+    ref_map = build_reference_map(pairs, direction)
+
+    # Một câu Tày có thể có nhiều bản dịch tiếng Việt hợp lệ. LM, mô hình căn
+    # chỉnh và bảng cụm đều loại trừ theo PHÍA VIỆT, nên phải bỏ TẤT CẢ các bản
+    # đó — giữ lại một bản thay thế cũng là rò rỉ đáp án.
+    tay_to_vi = build_reference_map(pairs, "tay2vi")
+    held_out_vi: set[str] = set()
+    for tay, vi in sample:
+        for alt in tay_to_vi.get(_norm(tay), [vi]):
+            held_out_vi.add((alt or "").strip().lower())
+
+    multi = sum(1 for src, _t in test if len(ref_map.get(_norm(src), [])) > 1)
     print(f"Chiều dịch: {direction}")
     print(f"Tổng cặp ví dụ: {len(pairs)}   |   dùng kiểm tra: {len(test)}")
+    print(f"Câu kiểm tra có nhiều hơn một đáp án hợp lệ: {multi}/{len(test)}")
 
     _ensure_index(EXCEL_PATH, direction)
     cache = _CACHES[direction]
@@ -206,6 +249,7 @@ def main() -> int:
 
     rows = []
     for tay, vi in test:
+        refs = ref_map.get(_norm(tay)) or [vi]
         base = translate_with_excel_glossary(tay, EXCEL_PATH, direction=direction)
         hyp = base["translation"]
 
@@ -220,15 +264,16 @@ def main() -> int:
             {
                 "tay": tay,
                 "ref": vi,
+                "refs": refs,
                 "hyp_lookup": hyp,
                 "hyp_ctx": hyp_ctx,
                 "coverage": base["coverage"],
                 "passthrough": base["passthrough_tokens"],
                 "context_picks": ctx_base.get("context_picks", 0),
-                "chrf": chrf(hyp, vi),
-                "f1": token_f1(hyp, vi),
-                "chrf_ctx": chrf(hyp_ctx, vi),
-                "f1_ctx": token_f1(hyp_ctx, vi),
+                "chrf": best_chrf(hyp, refs),
+                "f1": best_f1(hyp, refs),
+                "chrf_ctx": best_chrf(hyp_ctx, refs),
+                "f1_ctx": best_f1(hyp_ctx, refs),
             }
         )
 
@@ -236,7 +281,7 @@ def main() -> int:
         n = len(rows)
         avg_chrf = sum(r[key_chrf] for r in rows) / max(1, n)
         avg_f1 = sum(r[key_f1] for r in rows) / max(1, n)
-        exact = sum(1 for r in rows if _clean(r[key_hyp]) == _clean(r["ref"])) / max(1, n)
+        exact = sum(1 for r in rows if matches_any(r[key_hyp], r["refs"])) / max(1, n)
         print(f"--- {label} ---")
         print(f"  chrF trung bình      : {avg_chrf:.3f}")
         print(f"  token-F1 trung bình  : {avg_f1:.3f}")
@@ -295,8 +340,8 @@ def main() -> int:
                     if i == 1:
                         print(f"  (Ollama lỗi, dùng bản ghép từ điển: {e})")
                 r["hyp_" + key] = out
-                r["chrf_" + key] = chrf(out, r["ref"])
-                r["f1_" + key] = token_f1(out, r["ref"])
+                r["chrf_" + key] = best_chrf(out, r["refs"])
+                r["f1_" + key] = best_f1(out, r["refs"])
                 if i % 10 == 0:
                     print(f"  {i}/{len(rows)}")
 

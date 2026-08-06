@@ -29,6 +29,7 @@ _CACHE: dict = {
     "path": None,
     "mtime": None,
     "t": {},        # (tay, vi) -> P(vi | tay)
+    "t_rev": {},    # (vi, tay) -> P(tay | vi)
     "best": {},     # tay -> [(vi, p), ...] đã xếp hạng
     "locked": False,
     "iters": 0,
@@ -40,6 +41,44 @@ NULL = "<null>"
 
 def _tokens(text: str) -> list[str]:
     return [t for t in (x.strip("-–—") for x in _TOKEN_RE.findall((text or "").lower())) if t]
+
+
+def _train(corpus: list[tuple[list[str], list[str]]], iterations: int) -> dict:
+    """
+    EM cho IBM Model 1 theo MỘT chiều: trả về t[(src, tgt)] = P(tgt | src).
+
+    `corpus` là các cặp (token nguồn đã có NULL, token đích).
+    """
+    pairs_seen: set[tuple[str, str]] = set()
+    for f_toks, e_toks in corpus:
+        for f in f_toks:
+            for e in e_toks:
+                pairs_seen.add((f, e))
+    if not pairs_seen:
+        return {}
+
+    e_per_f: dict[str, set[str]] = {}
+    for f, e in pairs_seen:
+        e_per_f.setdefault(f, set()).add(e)
+    t: dict[tuple[str, str], float] = {
+        (f, e): 1.0 / len(es) for f, es in e_per_f.items() for e in es
+    }
+
+    for _ in range(iterations):
+        count: dict[tuple[str, str], float] = {}
+        total_f: dict[str, float] = {}
+        for f_toks, e_toks in corpus:
+            for e in e_toks:
+                s_total = sum(t.get((f, e), 0.0) for f in f_toks) or 1e-12
+                for f in f_toks:
+                    p = t.get((f, e), 0.0)
+                    if p <= 0.0:
+                        continue
+                    c = p / s_total
+                    count[(f, e)] = count.get((f, e), 0.0) + c
+                    total_f[f] = total_f.get(f, 0.0) + c
+        t = {k: v / total_f[k[0]] for k, v in count.items() if total_f.get(k[0], 0.0) > 0.0}
+    return t
 
 
 def build(
@@ -71,38 +110,15 @@ def build(
         if f_toks and e_toks:
             corpus.append(([NULL] + f_toks, e_toks))
 
-    # Khởi tạo đều: mỗi từ Việt ban đầu có thể sinh ra từ bất kỳ từ Tày nào cùng câu.
-    pairs_seen: set[tuple[str, str]] = set()
-    for f_toks, e_toks in corpus:
-        for f in f_toks:
-            for e in e_toks:
-                pairs_seen.add((f, e))
-    if not pairs_seen:
-        _CACHE.update(path=str(excel_path), t={}, best={}, locked=lock, iters=0, pairs=0)
+    if not corpus:
+        _CACHE.update(path=str(excel_path), t={}, t_rev={}, best={}, locked=lock, iters=0, pairs=0)
         return
 
-    e_per_f: dict[str, set[str]] = {}
-    for f, e in pairs_seen:
-        e_per_f.setdefault(f, set()).add(e)
-    t: dict[tuple[str, str], float] = {
-        (f, e): 1.0 / len(es) for f, es in e_per_f.items() for e in es
-    }
-
-    for _ in range(iterations):
-        count: dict[tuple[str, str], float] = {}
-        total_f: dict[str, float] = {}
-        for f_toks, e_toks in corpus:
-            for e in e_toks:
-                # Chuẩn hóa trên mọi từ Tày có thể sinh ra `e` trong câu này.
-                s_total = sum(t.get((f, e), 0.0) for f in f_toks) or 1e-12
-                for f in f_toks:
-                    p = t.get((f, e), 0.0)
-                    if p <= 0.0:
-                        continue
-                    c = p / s_total
-                    count[(f, e)] = count.get((f, e), 0.0) + c
-                    total_f[f] = total_f.get(f, 0.0) + c
-        t = {k: v / total_f[k[0]] for k, v in count.items() if total_f.get(k[0], 0.0) > 0.0}
+    # Huấn luyện CẢ HAI chiều. Một chiều chỉ cho căn chỉnh nhiều-về-một; có cả
+    # hai mới đối xứng hóa được để trích cụm chuẩn xác hơn (xem phrases.py).
+    t = _train(corpus, iterations)
+    rev_corpus = [([NULL] + e_toks, f_toks[1:]) for f_toks, e_toks in corpus]
+    t_rev = _train(rev_corpus, iterations)
 
     best: dict[str, list[tuple[str, float]]] = {}
     for (f, e), p in t.items():
@@ -114,8 +130,8 @@ def build(
         del best[f][8:]
 
     _CACHE.update(
-        path=str(excel_path), mtime=excel_path.stat().st_mtime, t=t, best=best,
-        locked=lock, iters=iterations, pairs=len(corpus),
+        path=str(excel_path), mtime=excel_path.stat().st_mtime, t=t, t_rev=t_rev,
+        best=best, locked=lock, iters=iterations, pairs=len(corpus),
     )
 
 
@@ -132,6 +148,11 @@ def ensure_model(excel_path: Path) -> None:
 def prob(tay_word: str, vi_word: str) -> float:
     """P(từ Việt | từ Tày) đã học được."""
     return _CACHE["t"].get(((tay_word or "").lower(), (vi_word or "").lower()), 0.0)
+
+
+def prob_rev(vi_word: str, tay_word: str) -> float:
+    """P(từ Tày | từ Việt) — chiều ngược, dùng để đối xứng hóa căn chỉnh."""
+    return _CACHE["t_rev"].get(((vi_word or "").lower(), (tay_word or "").lower()), 0.0)
 
 
 def score_pair(tay_phrase: str, vi_phrase: str) -> float:
