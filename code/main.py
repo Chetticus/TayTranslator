@@ -13,6 +13,8 @@ import requests
 
 from translation_api.excel_glossary import (
     _CACHE,
+    TAY2VI,
+    VI2TAY,
     _ensure_index,
     translate_with_excel_glossary,
 )
@@ -22,6 +24,7 @@ from translation_api.stt import stt_from_b64
 
 class ChatIn(BaseModel):
     message: str
+    direction: str | None = None
 
 
 class SttApiIn(BaseModel):
@@ -223,7 +226,11 @@ def _build_meta(base: dict) -> dict:
     # cách diễn đạt khác của cùng cụm đó, không phải mơ hồ thật. Nếu tính cả
     # chúng thì `kin khẩu` -> "ăn cơm" (đúng) lại bị gắn nhãn tin cậy thấp.
     ambiguous_share = (
-        sum(1 for g in glossary if g.get("alternatives") and g.get("kind") != "phrase")
+        sum(
+            1
+            for g in glossary
+            if g.get("alternatives") and g.get("kind") not in ("phrase", "mined")
+        )
         / len(glossary)
         if glossary
         else 0.0
@@ -473,20 +480,28 @@ def translate(payload: ChatIn):
         return {"mode": "validation", "reply": "Vui lòng nhập câu tiếng Tày.", "glossary": []}
 
     # 1) Excel-first glossary (single source of truth) + từ Việt dùng chung + tiền xử lý dòng hỗn hợp
-    first = translate_with_excel_glossary(text, EXCEL_GLOSSARY_PATH)
+    direction = VI2TAY if (payload.direction or "").strip() == VI2TAY else TAY2VI
+
+    first = translate_with_excel_glossary(text, EXCEL_GLOSSARY_PATH, direction=direction)
     preprocessed = (first.get("preprocessed_input") or text).strip()
 
-    # 2) Truy xuất câu song ngữ tương tự trong kho 14k cặp ví dụ
-    try:
-        examples = retrieve(preprocessed, EXCEL_GLOSSARY_PATH, k=RETRIEVE_K)
-    except Exception:
-        examples = []
+    # 2) Truy xuất câu song ngữ tương tự trong kho 14k cặp ví dụ.
+    # Chỉ dùng cho chiều Tày->Việt: chiều Việt->Tày là chiều gốc của từ điển nên
+    # đã ít mơ hồ, thêm ngữ cảnh vào chỉ gây nhiễu (chrF 0.475 -> 0.461).
+    examples: list[dict] = []
+    if direction == TAY2VI:
+        try:
+            examples = retrieve(
+                preprocessed, EXCEL_GLOSSARY_PATH, k=RETRIEVE_K, direction=direction
+            )
+        except Exception:
+            examples = []
 
     # 3) Tra lại, lần này dùng ngữ cảnh vừa truy xuất để CHỌN NGHĨA.
     # Chỉ mục đã nằm sẵn trong cache nên lượt hai gần như miễn phí.
     if examples:
         base = translate_with_excel_glossary(
-            text, EXCEL_GLOSSARY_PATH, context_pairs=examples
+            text, EXCEL_GLOSSARY_PATH, context_pairs=examples, direction=direction
         )
     else:
         base = first
@@ -504,7 +519,7 @@ def translate(payload: ChatIn):
             "reply": base.get("translation") or "",
             "glossary": glossary,
             "examples": examples,
-            "meta": {**cov, "gate": "no-llm"},
+            "meta": {**cov, "gate": "no-llm", "direction": direction},
         }
 
     # 5) Gate theo coverage

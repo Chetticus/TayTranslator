@@ -31,6 +31,7 @@ import pandas as pd
 
 from translation_api.excel_glossary import (
     _CACHE,
+    _CACHES,
     _ensure_index,
     _norm,
     _norm_loose,
@@ -115,8 +116,13 @@ def main() -> int:
     ap.add_argument("--n", type=int, default=200, help="số câu kiểm tra")
     ap.add_argument("--seed", type=int, default=13)
     ap.add_argument("--llm", action="store_true", help="đo cả bước Ollama (chậm)")
+    ap.add_argument(
+        "--direction", choices=["tay2vi", "vi2tay"], default="tay2vi",
+        help="vi2tay là chiều gốc của từ điển, ít mơ hồ hơn",
+    )
     ap.add_argument("--out", default="eval_report.json")
     args = ap.parse_args()
+    direction = args.direction
 
     if not EXCEL_PATH.exists():
         print(f"Không thấy từ điển: {EXCEL_PATH}", file=sys.stderr)
@@ -125,12 +131,18 @@ def main() -> int:
     pairs = load_example_pairs(EXCEL_PATH)
     rng = random.Random(args.seed)
     rng.shuffle(pairs)
-    test = pairs[: args.n]
+    sample = pairs[: args.n]
+    # `load_example_pairs` trả (tày, việt). Chiều vi2tay thì đảo lại: nguồn là
+    # tiếng Việt, đích là tiếng Tày.
+    held_out_vi = {(vi or "").strip().lower() for _tay, vi in sample}
+    test = [(vi, tay) for tay, vi in sample] if direction == "vi2tay" else list(sample)
+    print(f"Chiều dịch: {direction}")
     print(f"Tổng cặp ví dụ: {len(pairs)}   |   dùng kiểm tra: {len(test)}")
 
-    _ensure_index(EXCEL_PATH)
-    index = _CACHE["index"]
-    loose = _CACHE["loose"]
+    _ensure_index(EXCEL_PATH, direction)
+    cache = _CACHES[direction]
+    index = cache["index"]
+    loose = cache["loose"]
 
     # Gỡ chính các câu kiểm tra khỏi chỉ mục: chỉ xóa mục sinh ra từ câu ví dụ
     # (kind == "phrase"), giữ nguyên nghĩa mức từ — đúng tình huống gặp câu mới.
@@ -154,16 +166,19 @@ def main() -> int:
     # Mô hình ngôn ngữ cũng phải KHÔNG được thấy câu đích của tập kiểm tra.
     # Nếu bỏ bước này, bộ giải mã Viterbi tái tạo gần đúng câu đáp án và chrF
     # nhảy từ 0.395 lên 0.548 — một con số hoàn toàn giả.
-    from translation_api import align, lm  # noqa: PLC0415
+    from translation_api import align, lm, phrases  # noqa: PLC0415
 
-    held_out_vi = {(vi or "").strip().lower() for _tay, vi in test}
-    lm.build(EXCEL_PATH, exclude_vi=held_out_vi, lock=True)
-    print(f"LM dựng không có {len(held_out_vi)} câu đích kiểm tra: {lm.stats()}")
+    lm_side = lm.TAY if direction == "vi2tay" else lm.VI
+    lm.build(EXCEL_PATH, exclude_vi=held_out_vi, lock=True, side=lm_side)
+    print(f"LM ({lm_side}) dựng không có {len(held_out_vi)} câu đích kiểm tra: {lm.stats(lm_side)}")
 
-    # Mô hình căn chỉnh cũng học từ chính kho ngữ liệu này, nên cũng phải bị
-    # chặn khỏi tập kiểm tra — nếu không thì lại lặp đúng lỗi rò rỉ cũ.
+    # Mọi thành phần học từ kho ngữ liệu đều phải bị chặn khỏi tập kiểm tra —
+    # nếu không thì lại lặp đúng lỗi rò rỉ đã mắc hai lần trước.
     align.build(EXCEL_PATH, exclude_vi=held_out_vi, lock=True)
-    print(f"Mô hình căn chỉnh dựng không có câu kiểm tra: {align.stats()}\n")
+    print(f"Mô hình căn chỉnh dựng không có câu kiểm tra: {align.stats()}")
+
+    phrases.build(EXCEL_PATH, exclude_vi=held_out_vi, lock=True)
+    print(f"Bảng cụm trích không có câu kiểm tra: {phrases.stats()}\n")
 
     from translation_api.retriever import retrieve  # noqa: PLC0415
 
@@ -175,7 +190,9 @@ def main() -> int:
         nên loại theo khóa chính xác là chưa đủ — phải bỏ cả những cặp có phần
         tiếng Việt trùng đáp án.
         """
-        hits = retrieve(query, EXCEL_PATH, k=k + 6, exclude={_norm(query)})
+        hits = retrieve(
+            query, EXCEL_PATH, k=k + 6, exclude={_norm(query)}, direction=direction
+        )
         out, gq, gg = [], _clean(query), _clean(gold)
         for h in hits:
             if _clean(h["vi"]) == gg:
@@ -189,12 +206,14 @@ def main() -> int:
 
     rows = []
     for tay, vi in test:
-        base = translate_with_excel_glossary(tay, EXCEL_PATH)
+        base = translate_with_excel_glossary(tay, EXCEL_PATH, direction=direction)
         hyp = base["translation"]
 
         # Arm: tra từ điển + chọn nghĩa theo ngữ cảnh truy xuất (KHÔNG dùng LLM)
         ex = clean_examples(tay, vi, RETRIEVE_K)
-        ctx_base = translate_with_excel_glossary(tay, EXCEL_PATH, context_pairs=ex)
+        ctx_base = translate_with_excel_glossary(
+            tay, EXCEL_PATH, context_pairs=ex, direction=direction
+        )
         hyp_ctx = ctx_base["translation"]
 
         rows.append(

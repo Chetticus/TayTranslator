@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import align, lm
+from . import align, lm, phrases
 from .tay_input_preprocess import preprocess_tay_input
 
 _SPACE_RE = re.compile(r"\s+")
@@ -20,13 +20,26 @@ _GLOSS_SPLIT_RE = re.compile(r"[,;/]")
 # Dấu câu bám đầu/cuối token: bỏ khi tra cứu, giữ nguyên khi hiển thị.
 _PUNCT = ".,!?;:()[]{}\"'«»…"
 
-_CACHE: dict = {
-    "path": None,
-    "mtime": None,
-    "index": {},   # khóa GIỮ dấu thanh -> list ứng viên đã xếp hạng
-    "loose": {},   # khóa BỎ dấu thanh -> list ứng viên (chỉ dùng khi khóa giữ dấu trượt)
-    "max_ngram": 1,
-}
+TAY2VI = "tay2vi"
+VI2TAY = "vi2tay"
+DIRECTIONS = (TAY2VI, VI2TAY)
+
+
+def _blank_cache() -> dict:
+    return {
+        "path": None,
+        "mtime": None,
+        "index": {},   # khóa GIỮ dấu thanh -> list ứng viên đã xếp hạng
+        "loose": {},   # khóa BỎ dấu thanh -> list ứng viên (chỉ khi khóa giữ dấu trượt)
+        "fuzzy": {},
+        "max_ngram": 1,
+    }
+
+
+_CACHES: dict[str, dict] = {TAY2VI: _blank_cache(), VI2TAY: _blank_cache()}
+# Bí danh cho chiều mặc định; luôn được SỬA tại chỗ, không gán lại, nên mọi nơi
+# đang dùng `_CACHE` (health check, đánh giá, test) vẫn trỏ đúng đối tượng.
+_CACHE: dict = _CACHES[TAY2VI]
 
 _COMMON_VIET_FILE = Path(
     os.getenv(
@@ -133,12 +146,13 @@ def _add_candidate(bucket: dict, key: str, vi: str, kind: str, score: float) -> 
     lst.append({"vi": vi, "kind": kind, "score": score})
 
 
-def _ensure_index(excel_path: Path) -> None:
+def _ensure_index(excel_path: Path, direction: str = TAY2VI) -> None:
     if not excel_path.exists():
         raise FileNotFoundError(f"Không thấy Excel glossary: {excel_path}")
 
+    cache = _CACHES[direction]
     mtime = excel_path.stat().st_mtime
-    if _CACHE["path"] == str(excel_path) and _CACHE["mtime"] == mtime:
+    if cache["path"] == str(excel_path) and cache["mtime"] == mtime:
         return
 
     df = pd.read_excel(excel_path)
@@ -146,12 +160,13 @@ def _ensure_index(excel_path: Path) -> None:
     if "headword" not in df.columns or "definition_raw" not in df.columns:
         raise ValueError("Excel phải có cột 'headword' và 'definition_raw'.")
 
-    # Lượt 1: phân tích sẵn và ước lượng độ phổ biến của từ tiếng Việt.
+    # Lượt 1: phân tích sẵn và ước lượng độ phổ biến của từ ở phía ĐÍCH.
     # Từ điển gốc là Việt->Tày, nên khi lật chiều một nghĩa Tày thường ứng với
     # rất nhiều mục từ Việt (mẻ -> mẹ/vợ/cái/gái...). Tần suất trong chính các
     # câu ví dụ là tín hiệu sẵn có để xếp hạng thay vì chọn bừa.
     parsed: list[tuple[str, list[str], list[tuple[str, str]]]] = []
     vi_freq: dict[str, int] = {}
+    tay_freq: dict[str, int] = {}
     for _, row in df.iterrows():
         headword = str(row.get("headword", "") or "").strip()
         definition_raw = str(row.get("definition_raw", "") or "")
@@ -161,18 +176,25 @@ def _ensure_index(excel_path: Path) -> None:
         parsed.append((headword, glosses, examples))
         key = _norm(headword)
         vi_freq[key] = vi_freq.get(key, 0) + 2
-        for vi, _tay in examples:
-            for tok in _TOKEN_RE.findall(_norm(vi).strip(_PUNCT)):
-                tok = tok.strip(_PUNCT)
+        for g in glosses:
+            gk = _norm(g)
+            if gk:
+                tay_freq[gk] = tay_freq.get(gk, 0) + 2
+        for vi, tay in examples:
+            for tok in (t.strip(_PUNCT) for t in _TOKEN_RE.findall(_norm(vi))):
                 if tok:
                     vi_freq[tok] = vi_freq.get(tok, 0) + 1
+            for tok in (t.strip(_PUNCT) for t in _TOKEN_RE.findall(_norm(tay))):
+                if tok:
+                    tay_freq[tok] = tay_freq.get(tok, 0) + 1
 
-    max_freq = max(vi_freq.values()) if vi_freq else 1
+    target_freq = tay_freq if direction == VI2TAY else vi_freq
+    max_freq = max(target_freq.values()) if target_freq else 1
     log_max = math.log1p(max_freq)
 
-    def _freq_bonus(vi: str) -> float:
+    def _freq_bonus(word: str) -> float:
         """0..2, nén log để từ chức năng siêu phổ biến không nuốt hết nghĩa đúng."""
-        f = vi_freq.get(_norm(vi), 0)
+        f = target_freq.get(_norm(word), 0)
         if f <= 0 or log_max <= 0:
             return 0.0
         return 2.0 * math.log1p(f) / log_max
@@ -180,30 +202,33 @@ def _ensure_index(excel_path: Path) -> None:
     index: dict[str, list[dict]] = {}
     max_ngram = 1
 
+    reverse = direction == VI2TAY
     for headword, glosses, examples in parsed:
         example_tay = " ".join(_norm(t) for _, t in examples)
 
-        # (1) Nghĩa mức từ: Tày -> từ khóa tiếng Việt của mục từ.
+        # (1) Nghĩa mức từ. Chiều Tày->Việt phải LẬT từ điển (nghĩa Tày trỏ về
+        # mục từ Việt), nên rất mơ hồ. Chiều Việt->Tày là chiều gốc của từ điển:
+        # mỗi mục từ Việt chỉ có vài nghĩa Tày, ít mơ hồ hơn hẳn.
         for pos, gloss in enumerate(glosses):
-            key = _norm(gloss)
-            if not key:
+            gloss_key, target = _norm(gloss), headword
+            if reverse:
+                gloss_key, target = _norm(headword), gloss
+            if not gloss_key or not target:
                 continue
-            # Nghĩa đầu tiên là nghĩa chính; nghĩa được ví dụ của chính mục từ
-            # nhắc lại thì càng chắc chắn (dùng để chọn nghĩa thay vì "ghi trước thắng").
             score = 2.0 if pos == 0 else 1.0
-            if key in example_tay:
+            if _norm(gloss) in example_tay:
                 score += 1.0
-            score += _freq_bonus(headword)
-            _add_candidate(index, key, headword, "word", score)
-            max_ngram = max(max_ngram, len(_TOKEN_RE.findall(key)))
+            score += _freq_bonus(headword if not reverse else gloss)
+            _add_candidate(index, gloss_key, target, "word", score)
+            max_ngram = max(max_ngram, len(_TOKEN_RE.findall(gloss_key)))
 
         # (2) Câu ví dụ song ngữ: khớp cụm dài luôn đáng tin hơn ghép từng từ,
         # nên luôn xếp trên mọi ứng viên mức từ.
         for vi, tay in examples:
-            key = _norm(tay)
-            if not key:
+            key, target = (_norm(vi), tay) if reverse else (_norm(tay), vi)
+            if not key or not target:
                 continue
-            _add_candidate(index, key, vi, "phrase", 20.0)
+            _add_candidate(index, key, target, "phrase", 20.0)
             max_ngram = max(max_ngram, len(_TOKEN_RE.findall(key)))
 
     for lst in index.values():
@@ -232,12 +257,12 @@ def _ensure_index(excel_path: Path) -> None:
     for bucket in fuzzy.values():
         bucket[:] = sorted(set(bucket))
 
-    _CACHE["path"] = str(excel_path)
-    _CACHE["mtime"] = mtime
-    _CACHE["index"] = index
-    _CACHE["loose"] = loose
-    _CACHE["fuzzy"] = fuzzy
-    _CACHE["max_ngram"] = max_ngram
+    cache["path"] = str(excel_path)
+    cache["mtime"] = mtime
+    cache["index"] = index
+    cache["loose"] = loose
+    cache["fuzzy"] = fuzzy
+    cache["max_ngram"] = max_ngram
 
 
 def _lookup(index: dict, loose: dict, phrase: str) -> tuple[list[dict] | None, str]:
@@ -412,6 +437,13 @@ _MAX_CANDS = 6
 # Nghĩa là: xác suất học được THẬT SỰ tốt hơn luật tần suất đặt tay (mẻ->mẹ 0.71
 # thay vì chọn nhầm "cái"), nhưng phần cải thiện đó trùng với việc chọn nghĩa
 # theo ngữ cảnh truy xuất. Khi đã có ngữ cảnh thì thêm nó vào chỉ gây hại.
+# Bảng cụm trích từ căn chỉnh (phrases.py). Xếp trên nghĩa mức từ (tối đa ~5)
+# nhưng vẫn DƯỚI câu ví dụ khớp nguyên văn (20): cụm khai thác là suy ra, còn ví
+# dụ trong từ điển là có thật, nên khi tranh chấp phải nhường ví dụ.
+# Quét trên 500 câu tách riêng: điểm 4->0.4231, 8->0.4235, 18->0.4268;
+# ngưỡng đếm tối thiểu 1->0.4199, 2->0.4235, 3->0.4208, 5->0.4134.
+PHRASES_ENABLED = os.getenv("MINED_PHRASES", "1").strip().lower() in ("1", "true", "yes", "on")
+_MINED_SCORE = float(os.getenv("MINED_PHRASE_SCORE", "18.0"))
 ALIGN_ENABLED = os.getenv("ALIGN_MODEL", "0").strip().lower() in ("1", "true", "yes", "on")
 _ALIGN_WEIGHT = float(os.getenv("ALIGN_WEIGHT", "0.60"))
 LM_DECODE = os.getenv("LM_DECODE", "1").strip().lower() in ("1", "true", "yes", "on")
@@ -452,7 +484,7 @@ def _score_candidates(
     return out
 
 
-def _decode_spans(spans: list[dict], excel_path: Path) -> list[dict]:
+def _decode_spans(spans: list[dict], excel_path: Path, direction: str = TAY2VI) -> list[dict]:
     """
     Chọn CẢ CHUỖI nghĩa bằng Viterbi, cân giữa điểm từ điển và độ trôi chảy.
 
@@ -465,11 +497,13 @@ def _decode_spans(spans: list[dict], excel_path: Path) -> list[dict]:
     fallback = [s["cands"][0] for s in spans]
     if not LM_DECODE or len(spans) < 2:
         return fallback
+    # Đích là tiếng Việt hay tiếng Tày thì dùng LM của đúng phía đó.
+    side = lm.TAY if direction == VI2TAY else lm.VI
     try:
-        lm.ensure_lm(excel_path)
+        lm.ensure_lm(excel_path, side)
     except Exception:
         return fallback
-    if not lm.is_ready():
+    if not lm.is_ready(side):
         return fallback
 
     for s in spans:
@@ -480,7 +514,7 @@ def _decode_spans(spans: list[dict], excel_path: Path) -> list[dict]:
 
     def lm_term(toks: list[str], prev: str) -> float:
         # Trung bình theo token để không thiên vị nghĩa ngắn.
-        return lm.sequence_logp(toks, prev) / max(1, len(toks))
+        return lm.sequence_logp(toks, prev, side) / max(1, len(toks))
 
     dp: list[list[tuple[float, int]]] = []
     for si, s in enumerate(spans):
@@ -518,6 +552,7 @@ def translate_with_excel_glossary(
     excel_path: Path,
     max_ngram_cap: int = 14,
     context_pairs: list[dict] | None = None,
+    direction: str = TAY2VI,
 ) -> dict:
     """
     Dịch Tày -> Việt bằng glossary Excel, khớp cụm dài nhất trước.
@@ -540,17 +575,29 @@ def translate_with_excel_glossary(
         }
 
     common_loose, common_exact = _load_common_viet()
-    clean = preprocess_tay_input(raw, common_loose)
+    # Tiền xử lý và passthrough "trông giống tiếng Việt" chỉ hợp lý khi ĐẦU VÀO
+    # là tiếng Tày. Dịch Việt->Tày thì đầu vào vốn đã là tiếng Việt.
+    if direction == TAY2VI:
+        clean = preprocess_tay_input(raw, common_loose)
+    else:
+        clean = _SPACE_RE.sub(" ", raw).strip()
+        common_exact = frozenset()
 
-    _ensure_index(excel_path)
+    _ensure_index(excel_path, direction)
     if ALIGN_ENABLED:
         try:
             align.ensure_model(excel_path)
         except Exception:
             pass  # thiếu mô hình căn chỉnh thì vẫn chạy được bằng luật cũ
-    index: dict = _CACHE["index"]
-    loose: dict = _CACHE["loose"]
-    max_ngram = min(max_ngram_cap, int(_CACHE["max_ngram"] or 1))
+    if PHRASES_ENABLED:
+        try:
+            phrases.ensure_phrases(excel_path)
+        except Exception:
+            pass
+    cache = _CACHES[direction]
+    index: dict = cache["index"]
+    loose: dict = cache["loose"]
+    max_ngram = min(max_ngram_cap, int(cache["max_ngram"] or 1))
 
     words = _TOKEN_RE.findall(clean)
     # Bản đã tỉa dấu câu để tra cứu; bản gốc để hiển thị.
@@ -576,6 +623,25 @@ def translate_with_excel_glossary(
         for size in range(size_max, 0, -1):
             phrase = " ".join(probes[i:i + size])
             cands, source = _lookup(index, loose, phrase)
+            # Cụm khai thác từ căn chỉnh: bắt các tổ hợp không tách được mà từ
+            # điển không có mục riêng (kin phuối = "ăn nói", rườn lảng = "nhà cửa").
+            if PHRASES_ENABLED and size > 1 and phrases.is_ready():
+                mined = (
+                    phrases.lookup_reverse(_norm(phrase))
+                    if direction == VI2TAY
+                    else phrases.lookup(_norm(phrase))
+                )
+                if mined:
+                    extra = [
+                        {
+                            "vi": e,
+                            "kind": "mined",
+                            "score": _MINED_SCORE + min(2.0, math.log1p(c)),
+                        }
+                        for e, c in mined
+                    ]
+                    cands = list(cands) + extra if cands else extra
+                    source = source or "dict-mined"
             if not cands:
                 continue
             spans.append(
@@ -640,7 +706,7 @@ def translate_with_excel_glossary(
         i += 1
 
     # ---- Lượt 2: chọn cả CHUỖI nghĩa, không phải từng cụm rời rạc ----
-    chosen = _decode_spans(spans, excel_path)
+    chosen = _decode_spans(spans, excel_path, direction)
 
     # ---- Lượt 3: dựng bản dịch và bảng đối chiếu ----
     translated: list[str] = []
