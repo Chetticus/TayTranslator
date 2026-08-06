@@ -13,6 +13,10 @@ config.env
 # Evaluation output — regenerate with `python code/eval_translation.py`
 code/eval_*.json
 code/unknown_terms_log.jsonl
+code/calibration.json
+
+# Parameter-sweep scratch scripts
+code/.scratch/
 
 # Superseded result files. These report figures the current README explains are
 # invalid (a 93.7% coverage number and a 50% match rate, both measured on data
