@@ -146,6 +146,7 @@ plain-language description, see **[OVERVIEW.md](OVERVIEW.md)**.
 |---|---|
 | **[OVERVIEW.md](OVERVIEW.md)** | Plain-language description — start here if you don't code |
 | **[TECHNICAL.md](TECHNICAL.md)** | Architecture, methodology, all nine measured findings |
+| [HOW_TRANSLATION_WORKS.md](HOW_TRANSLATION_WORKS.md) | Step-by-step input-to-output explanation, English bridge, and demo guide |
 | [code/README.md](code/README.md) | Runtime detail, configuration, full benchmark tables |
 | [DATA.md](DATA.md) | Data provenance and licensing |
 | `code/` | Application, retrieval, decoding, evaluation harness, tests |
