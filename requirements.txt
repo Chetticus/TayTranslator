@@ -1,1 +1,10 @@
--r code/requirements-english.txt
+# Keep this deployment manifest self-contained. Railpack installs dependencies
+# before nested source files are available in its dependency layer.
+fastapi==0.139.0
+uvicorn[standard]==0.50.0
+pydantic==2.13.4
+requests==2.34.2
+pandas==3.0.3
+openpyxl==3.1.5
+ctranslate2==4.8.3
+sentencepiece==0.2.2
