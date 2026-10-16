@@ -63,6 +63,23 @@ cd code
 python -m pytest tests/ -v
 ```
 
+### Deploy on Railway
+
+The repository includes a root `requirements.txt`, Python version pin, and
+`railpack.json`, so Railway can detect and deploy it without Docker.
+
+1. Leave the service **Root Directory empty** so the build includes both
+   `code/` and the dictionary workbook at the repository root.
+2. Use Railway's **Railpack** builder. Clear any old build or start command
+   overrides; the checked-in Railpack configuration installs dependencies,
+   downloads the local English models during the image build, and starts the
+   FastAPI server on Railway's assigned port.
+3. Set the health-check path to `/api/health`.
+4. Generate a public domain under **Settings → Networking**.
+
+After deployment, open `https://YOUR-DOMAIN/api/health` and confirm that `ok`,
+`dictionary_ok`, and `english.ready` are all `true`.
+
 Reproduce the evaluation:
 
 ```bash
