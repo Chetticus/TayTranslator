@@ -1,8 +1,9 @@
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+from typing import Annotated, Literal
 import os
 import re
 import json
@@ -20,11 +21,25 @@ from translation_api.excel_glossary import (
 )
 from translation_api.retriever import corpus_size, retrieve
 from translation_api.stt import stt_from_b64
+from runtime_fingerprint import fingerprint
+from translation_api import english_bridge
 
 
 class ChatIn(BaseModel):
-    message: str
-    direction: str | None = None
+    message: str = Field(min_length=1, max_length=2000)
+    direction: Literal["tay2vi", "vi2tay", "en2tay", "tay2en"] = "tay2vi"
+    protected_terms: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(default_factory=list, max_length=20)
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value):
+        if not value.strip():
+            raise ValueError("Vui lòng nhập nội dung cần dịch.")
+        if len(value.split()) > 200:
+            raise ValueError("Tối đa 200 từ mỗi lần dịch.")
+        if any(unicodedata.category(c) == "Cc" and c not in "\n\r\t" for c in value):
+            raise ValueError("Nội dung chứa ký tự điều khiển không hợp lệ.")
+        return value
 
 
 class SttApiIn(BaseModel):
@@ -154,6 +169,7 @@ RETRIEVE_K = int(os.getenv("RETRIEVE_K", "2"))
 # Muốn thử lại: đặt USE_LLM=1 rồi chạy `python eval_translation.py --n 80 --llm`
 # và chỉ tin khi vượt được 0.393.
 USE_LLM = os.getenv("USE_LLM", "0").strip().lower() in ("1", "true", "yes", "on")
+LOG_UNKNOWN_TERMS = os.getenv("LOG_UNKNOWN_TERMS", "0").strip().lower() in ("1", "true", "yes", "on")
 
 _UI_TEMPLATE = Path(__file__).resolve().parent / "templates" / "tay_chat.html"
 
@@ -164,7 +180,7 @@ _DICT_SOURCES = ("dict", "dict-loose", "dict-fuzzy")
 # Khớp bỏ dấu / gần đúng chỉ là PHỎNG ĐOÁN: "khoi pay thieo" (gõ không dấu) vẫn
 # khớp đủ token nhưng ra kết quả sai hoàn toàn. Nếu phần lớn câu dựa vào các
 # khớp yếu này thì không được phép báo độ tin cậy cao.
-_WEAK_SOURCES = ("dict-loose", "dict-fuzzy")
+_WEAK_SOURCES = ("dict-loose", "dict-fuzzy", "unknown")
 
 # Hiệu chỉnh độ tin cậy. Bản đầu chia high/medium theo "câu có khớp được cụm dài
 # nào không" — đo ra tương quan với chrF chỉ -0.010, tức là VÔ NGHĨA, và hai
@@ -212,6 +228,9 @@ def _build_meta(base: dict) -> dict:
 
     known_terms = [g for g in glossary if g.get("source") in _DICT_SOURCES]
     passthrough_terms = [g for g in glossary if g.get("source") == "common_viet"]
+    preserved_terms = [
+        g for g in glossary if g.get("source") in ("named_entity", "literal")
+    ]
     weak_tokens = sum(
         len(_WORD_RE.findall(g.get("tay") or ""))
         for g in glossary
@@ -238,8 +257,11 @@ def _build_meta(base: dict) -> dict:
     risk = _CONF_W_AMBIGUITY * ambiguous_share + _CONF_W_WEAK * weak_share
 
     no_diacritics = _looks_undiacriticized(base.get("preprocessed_input") or "")
+    unknown_terms = base.get("unknown_terms") or []
     if coverage < LOW_COVERAGE_THRESHOLD or no_diacritics:
         confidence = "low"
+    elif unknown_terms:
+        confidence = "medium"
     elif risk < _CONF_HIGH_RISK:
         confidence = "high"
     elif risk < _CONF_MED_RISK:
@@ -257,12 +279,15 @@ def _build_meta(base: dict) -> dict:
         "no_diacritics": no_diacritics,
         "known_terms": known_terms,
         "passthrough_terms": [t.get("tay") for t in passthrough_terms],
-        "unknown_terms": base.get("unknown_terms") or [],
+        "preserved_terms": [
+            {"text": t.get("tay"), "kind": t.get("source")} for t in preserved_terms
+        ],
+        "unknown_terms": unknown_terms,
     }
 
 
 def _append_unknown_terms_log(text: str, unknown_terms: list[str], coverage: dict) -> None:
-    if not unknown_terms:
+    if not LOG_UNKNOWN_TERMS or not unknown_terms:
         return
     row = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -425,9 +450,9 @@ def favicon():
 
 @app.get("/api/health")
 def health():
-    """Cho biết từ điển và Ollama có sẵn sàng không, thay vì hỏng âm thầm."""
-    installed = _installed_ollama_models()
-    model = resolve_ollama_model(force=True)
+    """Report readiness for the configured translation path and optional LLM."""
+    installed = _installed_ollama_models() if USE_LLM else []
+    model = resolve_ollama_model(force=True) if USE_LLM else None
     dict_ok, dict_keys, dict_err, n_examples = True, 0, None, 0
     try:
         _ensure_index(EXCEL_GLOSSARY_PATH)
@@ -437,13 +462,17 @@ def health():
         dict_ok, dict_err = False, str(e)
 
     return {
-        "ok": dict_ok and bool(model),
+        "ok": dict_ok and (not USE_LLM or bool(model)),
         "excel_path": str(EXCEL_GLOSSARY_PATH),
         "excel_exists": EXCEL_GLOSSARY_PATH.exists(),
         "dictionary_ok": dict_ok,
         "dictionary_keys": dict_keys,
         "retrieval_examples": n_examples,
         "dictionary_error": dict_err,
+        "english": english_bridge.status(),
+        "engine_fingerprint": fingerprint(EXCEL_GLOSSARY_PATH) if dict_ok else None,
+        "llm_enabled": USE_LLM,
+        "llm_ready": bool(model),
         "ollama_url": OLLAMA_BASE_URL,
         "ollama_reachable": bool(installed),
         "ollama_models": installed,
@@ -475,6 +504,46 @@ def api_stt(payload: SttApiIn):
 
 @app.post("/api/translate")
 def translate(payload: ChatIn):
+    if payload.direction in ("en2tay", "tay2en"):
+        return translate_english(payload)
+    return _translate_dictionary(payload)
+
+
+def translate_english(payload: ChatIn):
+    try:
+        if not english_bridge.status()["ready"]:
+            raise english_bridge.EnglishUnavailable(english_bridge.status()["setup"])
+        if payload.direction == "en2tay":
+            bridge = english_bridge.translate(payload.message, "en_vi", payload.protected_terms)
+            pivot = bridge["text"]
+            terms = list(dict.fromkeys(payload.protected_terms + bridge["preserved_terms"]))
+            # The neural stage may expand the source; reject rather than truncate.
+            if len(pivot) > 2000 or len(pivot.split()) > 200:
+                raise english_bridge.EnglishInputError("Intermediate Vietnamese exceeds the input limit. Please shorten the text.")
+            if len(terms) > 20 or any(len(term) > 100 for term in terms):
+                raise english_bridge.EnglishInputError("Too many or overly long protected values. Please split the text.")
+            result = _translate_dictionary(ChatIn(message=pivot, direction="vi2tay", protected_terms=terms), allow_llm=False)
+        else:
+            result = _translate_dictionary(ChatIn(message=payload.message, direction="tay2vi", protected_terms=payload.protected_terms), allow_llm=False)
+            pivot = result["reply"]
+            terms = payload.protected_terms + [x['text'] for x in result['meta'].get('preserved_terms', [])]
+            bridge = english_bridge.translate(pivot, "vi_en", terms)
+            result["reply"] = bridge["text"]
+        result['mode'] = 'english-pivot-local'
+        result['meta'].update(direction=payload.direction, pivot_language='vi', pivot_text=pivot,
+            dictionary_confidence=result['meta']['confidence'], confidence='low',
+            coverage_scope='Vietnamese–Tày dictionary step only',
+            english_provider='Argos 1.9 / CTranslate2 · local CPU',
+            segmented_for_preservation=bridge['segmented_for_preservation'],
+            warning='Experimental two-stage translation via Vietnamese; errors can compound. Not speaker-verified.')
+        return result
+    except english_bridge.EnglishUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except english_bridge.EnglishInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _translate_dictionary(payload: ChatIn, allow_llm=True):
     text = (payload.message or "").strip()
     if not text:
         return {"mode": "validation", "reply": "Vui lòng nhập câu tiếng Tày.", "glossary": []}
@@ -482,7 +551,7 @@ def translate(payload: ChatIn):
     # 1) Excel-first glossary (single source of truth) + từ Việt dùng chung + tiền xử lý dòng hỗn hợp
     direction = VI2TAY if (payload.direction or "").strip() == VI2TAY else TAY2VI
 
-    first = translate_with_excel_glossary(text, EXCEL_GLOSSARY_PATH, direction=direction)
+    first = translate_with_excel_glossary(text, EXCEL_GLOSSARY_PATH, direction=direction, protected_terms=payload.protected_terms)
     preprocessed = (first.get("preprocessed_input") or text).strip()
 
     # 2) Truy xuất câu song ngữ tương tự trong kho 14k cặp ví dụ.
@@ -501,7 +570,7 @@ def translate(payload: ChatIn):
     # Chỉ mục đã nằm sẵn trong cache nên lượt hai gần như miễn phí.
     if examples:
         base = translate_with_excel_glossary(
-            text, EXCEL_GLOSSARY_PATH, context_pairs=examples, direction=direction
+            text, EXCEL_GLOSSARY_PATH, context_pairs=examples, direction=direction, protected_terms=payload.protected_terms
         )
     else:
         base = first
@@ -510,16 +579,20 @@ def translate(payload: ChatIn):
     cov = _build_meta(base)
     cov["context_picks"] = base.get("context_picks", 0)
     cov["examples"] = examples
+    cov["direction"] = direction
+    cov["confidence_is_probability"] = False
     _append_unknown_terms_log(text, cov["unknown_terms"], cov)
 
     # 4) Bước LLM bị tắt theo mặc định (xem chú thích ở USE_LLM)
-    if not USE_LLM:
+    # This editor's prompt only supports Tày -> Vietnamese. It must never run in
+    # reverse or rewrite protected values that the dictionary path preserved.
+    if not USE_LLM or not allow_llm or direction == VI2TAY or cov.get("preserved_terms"):
         return {
             "mode": "dictionary-context",
             "reply": base.get("translation") or "",
             "glossary": glossary,
             "examples": examples,
-            "meta": {**cov, "gate": "no-llm", "direction": direction},
+            "meta": {**cov, "gate": "no-llm" if not USE_LLM else "protected-or-unsupported-direction"},
         }
 
     # 5) Gate theo coverage

@@ -1,9 +1,9 @@
 # Tày → Vietnamese Translator
 
 A dictionary-grounded translation system for **Tày**, a Tai-Kadai language spoken by
-roughly 1.8 million people in northern Vietnam. Tày has no machine translation
-support, no Whisper language code, and no pretrained models — the only usable
-resource is a digitised Vietnamese–Tày–Nùng dictionary.
+roughly 1.8 million people in northern Vietnam. This implementation uses a
+digitised Vietnamese–Tày–Nùng dictionary. Other translation tools exist; claims
+of superiority require an independent comparison (see ../COMPARISON.md).
 
 This system turns that dictionary into a working translator by combining
 **lexical lookup** with **retrieval of similar example sentences**.
@@ -15,7 +15,7 @@ This system turns that dictionary into a working translator by combining
 ```bash
 python -m venv venv
 venv\Scripts\activate
-pip install -r code/requirements.txt
+pip install -r code/requirements-dev.txt
 cd code
 uvicorn main:app --port 8000
 ```
@@ -39,7 +39,7 @@ or set `EXCEL_GLOSSARY_PATH`.
 ```
 Tày input
    ↓
-[1] Preprocess         strip dictionary artefacts (~: markers, trailing glosses)
+[1] Normalize         Unicode NFC and whitespace; retain user content
    ↓
 [2] Retrieve           find the 2 most similar Tày sentences among 14,179
                        aligned example pairs (IDF token overlap + char 3-grams)

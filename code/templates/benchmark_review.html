@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="vi">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src data:; base-uri 'none'; form-action 'none'">
+<title>Tày · Phòng đánh giá bản dịch</title>
+<style>
+:root{font:16px/1.6 system-ui,sans-serif;color:#203b34;background:#f5f3ed}*{box-sizing:border-box}body{margin:0}main{max-width:1100px;margin:auto;padding:32px 24px 80px}header{display:flex;justify-content:space-between;align-items:center;gap:20px;border-bottom:1px solid #cad4ca;padding-bottom:24px}.brand{font-weight:750;letter-spacing:.13em}.tag{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#526e61}h1{font-size:clamp(28px,4vw,44px);line-height:1.2;font-weight:600;margin:28px 0 14px}p{max-width:780px}label{display:block;font-size:14px;font-weight:600}input,select,textarea,button{font:inherit}input,select,textarea{width:100%;padding:10px 12px;border:1px solid #a1b5a9;border-radius:8px;background:#fff;color:#203b34;margin:6px 0 14px}textarea{min-height:80px;resize:vertical}button,.file{display:inline-block;padding:10px 18px;border:1px solid #9caf9f;border-radius:8px;background:transparent;cursor:pointer;color:#203b34;font-weight:600}button.primary{background:#245444;color:white;border-color:#245444}button:disabled{opacity:.4;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #b47727;outline-offset:3px}.row,.cards{display:grid;grid-template-columns:1fr 1fr;gap:24px}.source{background:#e5ece2;border-left:4px solid #517b60;padding:20px 24px;margin:24px 0}.source p{font-size:23px;margin:8px 0}.card{background:white;border:1px solid #d5ddd3;border-radius:14px;padding:24px}.output{font-size:22px;min-height:100px;white-space:pre-wrap;overflow-wrap:anywhere}.muted{font-size:14px;color:#526e61}.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:24px 0}.toolbar span{margin-right:auto}progress{width:100%;height:6px;accent-color:#245444}details{margin:20px 0}summary{cursor:pointer;font-weight:600}.notice{color:#77521b}#message{min-height:26px}input[type=file]{max-width:310px;font-size:13px}footer{border-top:1px solid #cad4ca;margin-top:32px;padding-top:20px;font-size:13px} @media(max-width:680px){.row,.cards{grid-template-columns:1fr}main{padding:20px 16px}header{align-items:flex-start}.output{min-height:0}}
+</style>
+<main>
+<header><div class="brand">TÀY / REVIEW LAB</div><div class="tag">Đánh giá ẩn danh A/B<br>Local · No uploads</div></header>
+<h1>Mỗi đánh giá giúp bản dịch tốt hơn.</h1>
+<p>Đọc câu gốc và đánh giá từng bản dịch độc lập. A và B không hiển thị tên hệ thống. Chỉ chấm khi bạn có thể đánh giá ngôn ngữ và phương ngữ đó.</p>
+<div class="row"><label>Mã người đánh giá / Reviewer ID<input id="reviewer" placeholder="Ví dụ: reviewer-01" autocomplete="off"></label><label>Phương ngữ / Dialect<input id="dialect" placeholder="Khu vực / phương ngữ bạn sử dụng" autocomplete="off"></label></div>
+<details><summary>Hướng dẫn chấm điểm / Rating guide</summary><p><b>Nghĩa / Meaning:</b> 1 = sai nghĩa; 3 = đúng một phần; 5 = giữ đầy đủ ý nghĩa.<br><b>Tự nhiên / Fluency:</b> 1 = khó hiểu; 3 = hiểu được nhưng còn lỗi; 5 = tự nhiên trong phương ngữ của bạn.<br><b>Lỗi nghiêm trọng:</b> mất phủ định, sai tên/số, hoặc thêm ý không có trong câu gốc. Không chấm bản dịch bị thiếu. Có thể để trống nếu không chắc.</p><p class="notice">A/B là thứ tự ngẫu nhiên theo câu. Không suy đoán hệ thống nào tạo ra bản dịch. Không dùng câu trả lời của người đánh giá khác.</p></details>
+<div class="toolbar"><span id="position"></span><span id="completed"></span></div><progress id="progress" value="0"></progress>
+<section class="source"><div class="tag" id="direction"></div><p id="source"></p></section>
+<div class="cards" id="cards"></div>
+<label style="margin-top:24px">Bản dịch đề xuất (không bắt buộc) / Suggested correction<textarea id="reference" placeholder="Đề xuất của bạn; không phải bản tham chiếu độc lập vì bạn đã xem A/B."></textarea></label>
+<div class="toolbar"><button id="prev">← Câu trước</button><button id="next">Câu tiếp →</button><button id="download" class="primary">Tải đánh giá / Export ratings</button></div>
+<p id="message" role="status" aria-live="polite"></p>
+<details><summary>Tiếp tục từ tệp đã tải / Resume a saved review</summary><label>Chọn tệp JSONL<input id="import" type="file" accept=".jsonl,application/json,text/plain"></label></details>
+<footer>Không tự động lưu trên máy chủ hoặc trình duyệt. Hãy tải tệp trước khi đóng trang; tải lại tệp để tiếp tục. Trang không gửi đánh giá qua mạng. Chỉ chia sẻ tệp đánh giá với nhóm nghiên cứu.</footer>
+</main>
+<script id="data" type="application/json">__REVIEW_DATA__</script>
+<script>
+'use strict';
+const rows=JSON.parse(document.getElementById('data').textContent), original=JSON.parse(JSON.stringify(rows));
+let index=0, dirty=false;
+const $=id=>document.getElementById(id), fields=['meaning_1_to_5','fluency_1_to_5','critical_error'];
+function touch(){dirty=true;updateProgress()}
+function select(label,field,values,side,disabled){
+ const wrap=document.createElement('label');wrap.textContent=label;
+ const el=document.createElement('select');el.id=side+'-'+field;el.disabled=disabled;
+ for(const [value,text] of values){const option=document.createElement('option');option.value=value;option.textContent=text;el.append(option)}
+ const current=rows[index][side][field];el.value=current===null?'':String(current);
+ el.addEventListener('change',()=>{rows[index][side][field]=el.value===''?null:field==='critical_error'?el.value==='true':Number(el.value);touch()});wrap.append(el);return wrap;
+}
+function complete(r){return ['A','B'].every(s=>r[s].status!=='ok'||fields.every(f=>r[s][f]!==null))}
+function updateProgress(){const n=rows.filter(complete).length;$('completed').textContent=`${n}/${rows.length} câu đã chấm đủ`;$('progress').max=rows.length;$('progress').value=n}
+function render(){
+ const r=rows[index];$('position').textContent=`Câu ${index+1} / ${rows.length}`;
+ $('direction').textContent=r.case.direction==='vi2tay'?'Tiếng Việt → Tiếng Tày':'Tiếng Tày → Tiếng Việt';
+ $('source').textContent=r.case.text;$('reference').value=r.reference_translation;$('cards').replaceChildren();
+ for(const side of ['A','B']){
+  const score=r[side],card=document.createElement('section');card.className='card';
+  const title=document.createElement('h2');title.textContent=`Bản dịch ${side}`;card.append(title);
+  const output=document.createElement('p');output.className='output';output.textContent=score.output??'Không có bản dịch / No translation returned';card.append(output);
+  const absent=score.status!=='ok';
+  const scale=[['','Chưa chấm / Not rated'],['1','1'],['2','2'],['3','3'],['4','4'],['5','5']];
+  card.append(select('Đúng nghĩa / Meaning','meaning_1_to_5',scale,side,absent));
+  card.append(select('Tự nhiên / Fluency','fluency_1_to_5',scale,side,absent));
+  card.append(select('Có lỗi nghiêm trọng? / Critical error?','critical_error',[['','Chưa xác định / Not rated'],['false','Không / No'],['true','Có / Yes']],side,absent));
+  const label=document.createElement('label');label.textContent='Ghi chú / Notes';const notes=document.createElement('textarea');notes.value=score.notes;notes.addEventListener('input',()=>{score.notes=notes.value;touch()});label.append(notes);card.append(label);$('cards').append(card);
+ }
+ $('prev').disabled=index===0;$('next').disabled=index===rows.length-1;updateProgress();
+}
+$('reference').addEventListener('input',()=>{rows[index].reference_translation=$('reference').value;touch()});
+for(const field of ['reviewer','dialect'])$(field).addEventListener('input',()=>{for(const row of rows)row[field]=$(field).value.trim();touch()});
+$('prev').onclick=()=>{index--;render()};$('next').onclick=()=>{index++;render()};
+$('download').onclick=()=>{
+ if(!$('reviewer').value.trim()||!$('dialect').value.trim()){$('message').textContent='Vui lòng nhập mã người đánh giá và phương ngữ trước khi tải.';return}
+ const blob=new Blob([rows.map(r=>JSON.stringify(r)).join('\n')+'\n'],{type:'application/x-ndjson;charset=utf-8'});
+ const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='tay-review-'+$('reviewer').value.replace(/[^a-zA-Z0-9_-]/g,'_')+'.jsonl';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);dirty=false;
+ $('message').textContent='Đã tạo tệp tải xuống. Kiểm tra tệp trước khi đóng trang. Có thể tiếp tục đánh giá.';
+};
+$('import').onchange=async event=>{
+ try{
+  const file=event.target.files[0];if(!file)return;if(file.size>2000000)throw Error('Tệp quá lớn');
+  const incoming=(await file.text()).trim().split(/\r?\n/).map(line=>JSON.parse(line));
+  if(incoming.length!==rows.length)throw Error('Số câu không khớp');
+  const map=new Map(incoming.map(r=>[r.case_hash,r]));if(map.size!==rows.length)throw Error('Câu trùng lặp');
+  const ordered=original.map(o=>{
+   const r=map.get(o.case_hash);if(!r||JSON.stringify(r.case)!==JSON.stringify(o.case))throw Error('Câu không khớp');
+   for(const field of ['reviewer','dialect','reference_translation'])if(typeof r[field]!=='string')throw Error('Định dạng sai');
+   for(const s of ['A','B']){
+    if(!r[s]||r[s].output!==o[s].output||r[s].status!==o[s].status||typeof r[s].notes!=='string')throw Error('Bản dịch không khớp');
+    for(const f of fields){const v=r[s][f];if(v!==null&&(f==='critical_error'?typeof v!=='boolean':!Number.isInteger(v)||v<1||v>5))throw Error('Điểm không hợp lệ');if(o[s].status!=='ok'&&v!==null)throw Error('Không thể chấm bản dịch bị thiếu')}
+   }return r;
+  });
+  if(ordered.some(r=>r.reviewer!==ordered[0].reviewer||r.dialect!==ordered[0].dialect))throw Error('Một tệp chỉ dành cho một người đánh giá');
+  if(dirty&&!confirm('Thay thế các đánh giá chưa tải xuống?'))return;
+  rows.splice(0,rows.length,...ordered);$('reviewer').value=rows[0].reviewer;$('dialect').value=rows[0].dialect;index=0;dirty=false;render();$('message').textContent='Đã tải đánh giá từ tệp.';
+ }catch(error){$('message').textContent='Không thể tải: '+error.message}
+ event.target.value='';
+};
+window.addEventListener('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue=''}});
+render();
+</script>
+</html>

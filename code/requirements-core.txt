@@ -1,0 +1,7 @@
+# Text translation and benchmark tools only; no speech model / PyTorch install.
+fastapi==0.139.0
+uvicorn[standard]==0.50.0
+pydantic==2.13.4
+requests==2.34.2
+pandas==3.0.3
+openpyxl==3.1.5

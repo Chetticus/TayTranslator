@@ -1,0 +1,13 @@
+{"id":"greeting","direction":"vi2tay","category":"basic","text":"xin chào"}
+{"id":"name","direction":"vi2tay","category":"proper_name","text":"xin chào mình là Nguyễn Hải Nam","local_only":true}
+{"id":"name_lower","direction":"vi2tay","category":"proper_name","text":"xin chào mình là nguyễn hải nam","local_only":true}
+{"id":"fictional_name","direction":"vi2tay","category":"proper_name","text":"xin chào mình là Nhân Vật A","note":"Artificial character label, not a real person"}
+{"id":"negation","direction":"vi2tay","category":"negation","text":"Tôi không ăn cơm."}
+{"id":"affirmative","direction":"vi2tay","category":"negation_control","text":"Tôi ăn cơm."}
+{"id":"question","direction":"vi2tay","category":"question","text":"Bạn có ăn cơm không?"}
+{"id":"time_number","direction":"vi2tay","category":"numbers","text":"Ngày mai tôi đến lúc 8 giờ."}
+{"id":"address","direction":"vi2tay","category":"proper_name","text":"Tôi sống ở Cao Bằng."}
+{"id":"punctuation","direction":"vi2tay","category":"punctuation","text":"Xin chào! Bạn khỏe không?"}
+{"id":"ambiguous","direction":"vi2tay","category":"polysemy","text":"Con đường này có nhiều đường cong."}
+{"id":"no_accents","direction":"vi2tay","category":"diacritics","text":"toi muon uong nuoc"}
+{"id":"literal","direction":"vi2tay","category":"literal","text":"Email của tôi là nam@example.com.","local_only":true}

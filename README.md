@@ -4,16 +4,20 @@ A translation system for **Tày**, a Tai-Kadai language spoken by roughly 1.8
 million people in northern Vietnam, built from a single digitised dictionary and
 evaluated on held-out data.
 
-Tày has no machine translation support, no Whisper language code, and no
-pretrained model coverage. There is no parallel corpus to train on. This project
-extracts everything it knows from one Vietnamese→Tày dictionary, and combines
-lexical lookup with sentence retrieval and statistical decoding.
+This implementation derives its translation resources from one Vietnamese→Tày
+dictionary and combines lexical lookup with sentence retrieval and statistical
+decoding. Other public tools exist, including taynung.com; this project does not
+claim to be the first or to outperform them. Independent speaker evaluation is
+pending. See [the comparison protocol](COMPARISON.md).
 
 ---
 
 ## Results
 
-Measured on **500 held-out sentences**, removed from the index before scoring.
+Historical development measurements on **500 held-out dictionary sentences**,
+removed from the index before scoring. These are not native-speaker accuracy
+scores, not a comparison against taynung.com, and not a fresh measurement of the
+current working tree. See [pre-verification readiness](PRE_VERIFICATION.md).
 
 **Tày → Việt** — the harder direction, since the dictionary must be inverted:
 
@@ -39,10 +43,12 @@ scale typically reports chrF 0.30–0.50.
 
 ## Quick start
 
+Optional offline **English ↔ Tày**, via Vietnamese: see [English setup and limitations](ENGLISH.md).
+
 ```bash
 python -m venv venv
 venv\Scripts\activate
-pip install -r code/requirements.txt
+pip install -r code/requirements-dev.txt
 cd code
 uvicorn main:app --port 8000
 ```

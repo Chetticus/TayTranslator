@@ -14,6 +14,8 @@ config.env
 code/eval_*.json
 code/unknown_terms_log.jsonl
 code/calibration.json
+code/benchmark_runs/
+code/models/
 
 # Parameter-sweep scratch scripts
 code/.scratch/

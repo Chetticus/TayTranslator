@@ -1,0 +1,3 @@
+-r requirements-core.txt
+ctranslate2==4.8.3
+sentencepiece==0.2.2

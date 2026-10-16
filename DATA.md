@@ -28,7 +28,7 @@ open an issue.
 ## A note on the language
 
 Tày is a Tai-Kadai language with roughly 1.8 million speakers in northern
-Vietnam. It has no machine translation support, no Whisper language code, and no
-pretrained model coverage. Work on languages in this position depends heavily on
+Vietnam. This project does not claim an absence of other translation tools.
+Its implementation depends heavily on
 dictionaries compiled by community linguists, and that labour deserves
 attribution rather than silent absorption into a dataset.

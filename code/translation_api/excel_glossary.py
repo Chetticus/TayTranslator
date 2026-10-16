@@ -18,7 +18,7 @@ _PAREN_RE = re.compile(r"\([^)]*\)")
 _GLOSS_SPLIT_RE = re.compile(r"[,;/]")
 
 # Dấu câu bám đầu/cuối token: bỏ khi tra cứu, giữ nguyên khi hiển thị.
-_PUNCT = ".,!?;:()[]{}\"'«»…"
+_PUNCT = ".,!?;:()[]{}\"'«»…“”‘’"
 
 TAY2VI = "tay2vi"
 VI2TAY = "vi2tay"
@@ -54,7 +54,7 @@ _COMMON_VIET_MTIME: float | None = None
 
 def _norm(text: str) -> str:
     """Chuẩn hóa GIỮ dấu thanh — thanh điệu là âm vị, không được bỏ."""
-    return _SPACE_RE.sub(" ", (text or "").strip().lower())
+    return _SPACE_RE.sub(" ", unicodedata.normalize("NFC", text or "").strip().lower())
 
 
 def _norm_loose(text: str) -> str:
@@ -330,6 +330,148 @@ def _fuzzy_lookup(token: str, loose: dict, fuzzy: dict) -> tuple[list[dict] | No
     return (hit, "dict-fuzzy") if hit else (None, "")
 
 
+def _letters(text: str) -> list[str]:
+    return [ch for ch in text if ch.isalpha()]
+
+
+def _is_all_caps_token(text: str) -> bool:
+    letters = _letters(text)
+    return len(letters) >= 2 and all(ch.isupper() for ch in letters)
+
+
+def _is_title_token(text: str) -> bool:
+    letters = _letters(text)
+    return bool(letters) and letters[0].isupper() and all(ch.islower() for ch in letters[1:])
+
+
+def _is_structured_literal(text: str) -> bool:
+    """Return true for values that should be copied, never dictionary-translated."""
+    token = (text or "").strip()
+    if not token:
+        return False
+    lowered = token.lower()
+    if lowered.startswith(("http://", "https://", "www.")):
+        return True
+    if "@" in token or "_" in token:
+        return True
+    if re.fullmatch(r"[^\s@]+\.[a-zA-Z]{2,}", token):
+        return True
+    if any(ch.isdigit() for ch in token):
+        return True
+    # Emoji, standalone punctuation and other non-linguistic symbols.
+    return not any(ch.isalpha() for ch in token)
+
+
+def _starts_sentence(words: list[str], index: int) -> bool:
+    if index <= 0:
+        return True
+    previous = words[index - 1].rstrip()
+    return previous.endswith((".", "!", "?", "…"))
+
+
+def _protected_spans(
+    words: list[str], probes: list[str], index: dict, loose: dict,
+    direction: str = TAY2VI, protected_terms: list[str] | None = None,
+) -> dict[int, tuple[int, str, str]]:
+    """
+    Find named entities and structured values that translation must preserve.
+
+    The dictionary contains ordinary senses for many Vietnamese names (for
+    example ``Nam`` can mean south/male), so letting the lexical decoder see a
+    capitalised name corrupts it. Consecutive title-cased words are treated as a
+    named entity; single title-cased words are protected away from sentence
+    starts, and acronyms are always protected. This is intentionally conservative
+    and does not require a cloud NER model.
+    """
+    protected: dict[int, tuple[int, str, str]] = {}
+
+    # Explicit user choices win over uncertain automatic recognition. Longest first.
+    terms = sorted((_norm(t).split() for t in (protected_terms or []) if t.strip()), key=len, reverse=True)
+    occupied: set[int] = set()
+    for i in range(len(probes)):
+        for term in terms:
+            end = i + len(term)
+            if end <= len(probes) and not occupied.intersection(range(i, end)) and \
+                    [_norm(p) for p in probes[i:end]] == term:
+                protected[i] = (len(term), "named_entity", "giữ nguyên theo yêu cầu người dùng")
+                occupied.update(range(i, end))
+                break
+
+    # Bounded name-introduction heuristic, not general NER. Require a family name
+    # and >=2 name tokens so ordinary "tôi là sinh viên" is not swallowed.
+    if direction == VI2TAY:
+        surnames = {"nguyễn", "trần", "lê", "phạm", "hoàng", "huỳnh", "phan", "vũ", "võ", "đặng", "bùi", "đỗ", "hồ", "ngô", "dương", "lý"}
+        surnames |= {_norm_loose(s) for s in surnames}
+        stops = {"và", "là", "ở", "đang", "sống", "học", "làm", "tôi", "mình", "bạn", "rất", "thích", "năm", "tuổi"}
+        normalized = [_norm(p) for p in probes]
+        for i, token in enumerate(normalized):
+            prefix = normalized[max(0, i - 3):i]
+            cue = (prefix[-2:] in (["tên", "là"], ["tôi", "tên"], ["mình", "tên"], ["tôi", "là"], ["mình", "là"]))
+            if not cue or token not in surnames or i in occupied:
+                continue
+            end = i
+            while end < min(len(words), i + 5):
+                if end in occupied or normalized[end] in stops or not probes[end].isalpha():
+                    break
+                end += 1
+                if _edge_punctuation(words[end - 1])[1]:
+                    break
+            if end - i >= 2:
+                protected[i] = (end - i, "named_entity", "tên sau lời giới thiệu; nhận diện theo quy tắc")
+                occupied.update(range(i, end))
+
+    for i, probe in enumerate(probes):
+        if i not in occupied and _is_structured_literal(probe):
+            protected[i] = (
+                1,
+                "literal",
+                "giữ nguyên số, ngày tháng, địa chỉ, biểu tượng hoặc mã định danh",
+            )
+
+    i = 0
+    while i < len(probes):
+        if i in occupied or i in protected or not _is_title_token(probes[i]):
+            i += 1
+            continue
+        j = i + 1
+        while j < len(probes) and j not in occupied and j not in protected and _is_title_token(probes[j]) and not _edge_punctuation(words[j - 1])[1]:
+            j += 1
+        size = j - i
+        if direction == VI2TAY and _norm(" ".join(probes[i:j])) in {"xin chào", "cảm ơn", "tạm biệt"}:
+            i = j
+            continue
+        dictionary_hit, _source = _lookup(index, loose, probes[i])
+        if size >= 2 or not _starts_sentence(words, i) or not dictionary_hit:
+            protected[i] = (size, "named_entity", "giữ nguyên tên riêng")
+            for covered in range(i + 1, j):
+                protected.pop(covered, None)
+        i = j
+
+    for i, probe in enumerate(probes):
+        if i not in occupied and i not in protected and _is_all_caps_token(probe) and (
+            probe in {"AI", "UN", "UNESCO", "NASA"} or not _lookup(index, loose, probe)[0]
+        ):
+            protected[i] = (1, "named_entity", "giữ nguyên tên riêng hoặc chữ viết tắt")
+
+    return protected
+
+
+def _edge_punctuation(text: str) -> tuple[str, str]:
+    """Return punctuation attached to the outside edges of a translated span."""
+    tokens = _TOKEN_RE.findall(text or "")
+    if not tokens:
+        return "", ""
+
+    first, last = tokens[0], tokens[-1]
+    prefix_len = 0
+    while prefix_len < len(first) and unicodedata.category(first[prefix_len]).startswith("P"):
+        prefix_len += 1
+    suffix_start = len(last)
+    while suffix_start > 0 and unicodedata.category(last[suffix_start - 1]).startswith("P"):
+        suffix_start -= 1
+    return first[:prefix_len], last[suffix_start:]
+
+
 # Bằng chứng CÓ MỤC TIÊU (câu ví dụ thật sự chứa từ đang xét) đáng tin hơn hẳn
 # bằng chứng gộp chung (từ xuất hiện đâu đó trong 5 câu truy xuất).
 # Đo trên 500 câu tách riêng: chỉ dùng bằng chứng gộp chung còn TỆ HƠN không
@@ -553,6 +695,7 @@ def translate_with_excel_glossary(
     max_ngram_cap: int = 14,
     context_pairs: list[dict] | None = None,
     direction: str = TAY2VI,
+    protected_terms: list[str] | None = None,
 ) -> dict:
     """
     Dịch Tày -> Việt bằng glossary Excel, khớp cụm dài nhất trước.
@@ -561,7 +704,9 @@ def translate_with_excel_glossary(
     với tiếng Việt được trả về nguyên dạng nhưng đếm riêng (`passthrough_tokens`),
     vì trả lại nguyên từ Tày không phải là dịch được.
     """
-    raw = (text or "").strip()
+    if direction not in DIRECTIONS:
+        raise ValueError("Unsupported translation direction")
+    raw = unicodedata.normalize("NFC", text or "").strip()
     if not raw:
         return {
             "translation": "",
@@ -577,10 +722,10 @@ def translate_with_excel_glossary(
     common_loose, common_exact = _load_common_viet()
     # Tiền xử lý và passthrough "trông giống tiếng Việt" chỉ hợp lý khi ĐẦU VÀO
     # là tiếng Tày. Dịch Việt->Tày thì đầu vào vốn đã là tiếng Việt.
-    if direction == TAY2VI:
-        clean = preprocess_tay_input(raw, common_loose)
-    else:
-        clean = _SPACE_RE.sub(" ", raw).strip()
+    # Dictionary-extraction cleanup may delete text after '?' or inside URLs.
+    # Live user input must not be interpreted as dictionary markup.
+    clean = _SPACE_RE.sub(" ", raw).strip()
+    if direction != TAY2VI:
         common_exact = frozenset()
 
     _ensure_index(excel_path, direction)
@@ -602,6 +747,7 @@ def translate_with_excel_glossary(
     words = _TOKEN_RE.findall(clean)
     # Bản đã tỉa dấu câu để tra cứu; bản gốc để hiển thị.
     probes = [w.strip(_PUNCT) or w for w in words]
+    protected = _protected_spans(words, probes, index, loose, direction, protected_terms)
 
     # Bằng chứng ngữ cảnh từ các câu ví dụ tương tự -> dùng để chọn nghĩa.
     ctx = _prep_context(context_pairs)
@@ -618,8 +764,38 @@ def translate_with_excel_glossary(
     i = 0
 
     while i < len(words):
+        if i in protected:
+            size, source, note = protected[i]
+            original = " ".join(words[i:i + size])
+            preserved = original
+            spans.append(
+                {
+                    "tay": original,
+                    "source": source,
+                    "note": note,
+                    "cands": [
+                        {
+                            "vi": preserved,
+                            "kind": source,
+                            "score": 0.0,
+                            "adj": 0.0,
+                            "by_ctx": False,
+                        }
+                    ],
+                }
+            )
+            passthrough_tokens += size
+            i += size
+            continue
+
         found = False
         size_max = min(max_ngram, len(words) - i)
+        # Never let a longer dictionary/mined phrase consume a protected span or
+        # erase punctuation between words/sentences.
+        for boundary in range(i + 1, i + size_max):
+            if boundary in protected or _edge_punctuation(words[boundary - 1])[1] or _edge_punctuation(words[boundary])[0]:
+                size_max = boundary - i
+                break
         for size in range(size_max, 0, -1):
             phrase = " ".join(probes[i:i + size])
             cands, source = _lookup(index, loose, phrase)
@@ -669,7 +845,7 @@ def translate_with_excel_glossary(
                     "tay": token,
                     "source": "common_viet",
                     "note": "giữ nguyên do trùng hình thức tiếng Việt, chưa tra được nghĩa Tày",
-                    "cands": [{"vi": token, "kind": "word", "score": 0.0, "adj": 0.0, "by_ctx": False}],
+                    "cands": [{"vi": probe, "kind": "word", "score": 0.0, "adj": 0.0, "by_ctx": False}],
                 }
             )
             passthrough_tokens += 1
@@ -679,7 +855,7 @@ def translate_with_excel_glossary(
         # Cứu cánh cuối: dò gần đúng. Chỉ chạy khi mọi cách khác đã trượt nên
         # không thể phá kết quả vốn đã đúng — chỉ biến "không biết" thành "đoán".
         if FUZZY_ENABLED:
-            fz_cands, fz_source = _fuzzy_lookup(probe, loose, _CACHE.get("fuzzy") or {})
+            fz_cands, fz_source = _fuzzy_lookup(probe, loose, cache.get("fuzzy") or {})
             if fz_cands:
                 spans.append(
                     {
@@ -693,13 +869,13 @@ def translate_with_excel_glossary(
                 i += 1
                 continue
 
-        unknown_terms.append(token)
+        unknown_terms.append(probe)
         spans.append(
             {
                 "tay": token,
                 "source": "unknown",
                 "cands": [
-                    {"vi": f"[{token}]", "kind": "unknown", "score": 0.0, "adj": 0.0, "by_ctx": False}
+                    {"vi": f"[{probe}]", "kind": "unknown", "score": 0.0, "adj": 0.0, "by_ctx": False}
                 ],
             }
         )
@@ -712,7 +888,8 @@ def translate_with_excel_glossary(
     translated: list[str] = []
     glossary: list[dict] = []
     for span, cand in zip(spans, chosen):
-        translated.append(cand["vi"])
+        prefix, suffix = _edge_punctuation(span["tay"])
+        translated.append(cand['vi'] if span['source'] in ("named_entity", "literal") else f"{prefix}{cand['vi']}{suffix}")
         if cand.get("by_ctx"):
             n_ctx_picks += 1
         src = span["source"]

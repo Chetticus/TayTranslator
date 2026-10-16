@@ -32,6 +32,7 @@ from eval_translation import (  # noqa: E402
 from translation_api import lm  # noqa: E402
 from translation_api.excel_glossary import (  # noqa: E402
     _CACHE,
+    VI2TAY,
     _ensure_index,
     _norm_loose,
     translate_with_excel_glossary,
@@ -104,6 +105,77 @@ def test_unknown_word_is_reported_not_silently_dropped():
     r = translate_with_excel_glossary("kin khẩu zzzqqq", EXCEL_PATH)
     assert r["total_tokens"] == 3
     assert r["coverage"] < 1.0
+
+
+@pytest.mark.parametrize(
+    "source,protected",
+    [
+        ("xin chào mình là Nguyễn Hải Nam", "Nguyễn Hải Nam"),
+        ("Tôi tên là Trần Minh Anh.", "Trần Minh Anh"),
+        ("Hà Nội là thủ đô của Việt Nam.", "Hà Nội"),
+        ("Tôi thích AI và Python.", "AI"),
+    ],
+)
+def test_vietnamese_named_entities_are_preserved(source, protected):
+    r = translate_with_excel_glossary(source, EXCEL_PATH, direction=VI2TAY)
+    assert protected in r["translation"]
+
+
+@pytest.mark.parametrize(
+    "source,literal",
+    [
+        ("Email của tôi là nam@example.com", "nam@example.com"),
+        ("Tôi có 2 con mèo.", "2"),
+        ("Hôm nay là 12/10/2026.", "12/10/2026"),
+        ("Xin chào 👋", "👋"),
+    ],
+)
+def test_structured_literals_are_preserved_without_unknown_brackets(source, literal):
+    r = translate_with_excel_glossary(source, EXCEL_PATH, direction=VI2TAY)
+    assert literal in r["translation"]
+    assert f"[{literal}]" not in r["translation"]
+
+
+def test_unknown_capitalized_product_word_is_preserved_at_sentence_start():
+    r = translate_with_excel_glossary(
+        "Email của tôi là nam@example.com", EXCEL_PATH, direction=VI2TAY
+    )
+    assert r["translation"].startswith("Email ")
+    assert "Email" not in r["unknown_terms"]
+
+
+def test_named_entity_is_preserved_in_tay_to_vietnamese_text():
+    r = translate_with_excel_glossary("Nguyễn Hải Nam kin khẩu", EXCEL_PATH)
+    assert r["translation"] == "Nguyễn Hải Nam ăn cơm"
+
+
+def test_empty_and_whitespace_only_input_is_safe():
+    for source in ("", "   ", "\n\t"):
+        r = translate_with_excel_glossary(source, EXCEL_PATH)
+        assert r["translation"] == ""
+        assert r["total_tokens"] == 0
+
+
+def test_spacing_is_normalized_without_changing_translation():
+    r = translate_with_excel_glossary("  kin   khẩu  ", EXCEL_PATH)
+    assert r["translation"] == "ăn cơm"
+
+
+def test_quotes_and_terminal_punctuation_are_preserved():
+    r = translate_with_excel_glossary('"kin khẩu!"', EXCEL_PATH)
+    assert r["translation"] == '"ăn cơm!"'
+
+
+def test_translation_preserves_attached_punctuation():
+    r = translate_with_excel_glossary("kin khẩu!", EXCEL_PATH)
+    assert r["translation"] == "ăn cơm!"
+
+
+def test_unknown_terms_prevent_high_confidence():
+    import main  # noqa: PLC0415
+
+    r = translate_with_excel_glossary("kin khẩu zzzqqq", EXCEL_PATH)
+    assert main._build_meta(r)["confidence"] != "high"
 
 
 def test_undiacriticized_input_is_flagged_low_confidence():

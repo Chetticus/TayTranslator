@@ -232,9 +232,11 @@
 
     .dir-switch {
       display: inline-flex;
+      flex-wrap: wrap;
+      max-width: 100%;
       border: 1px solid var(--border);
       background: var(--bg-soft);
-      border-radius: 999px;
+      border-radius: 16px;
       padding: 2px;
       margin-left: auto;
       flex: 0 0 auto;
@@ -632,6 +634,8 @@
         <div class="dir-switch" id="dirSwitch" role="group" aria-label="Chiều dịch">
           <button type="button" class="dir-opt active" data-dir="tay2vi">Tày → Việt</button>
           <button type="button" class="dir-opt" data-dir="vi2tay">Việt → Tày</button>
+          <button type="button" class="dir-opt" data-dir="en2tay">English → Tày</button>
+          <button type="button" class="dir-opt" data-dir="tay2en">Tày → English</button>
         </div>
         <div class="status-pill" id="statusPill" title="Trạng thái hệ thống">
           <span class="status-dot"></span>
@@ -668,7 +672,7 @@
       <div class="input-wrap">
         <div class="composer">
           <div class="composer-row">
-            <textarea id="input" placeholder="Nhập câu tiếng Tày..." rows="1" aria-label="Câu tiếng Tày"></textarea>
+            <textarea id="input" maxlength="2000" placeholder="Nhập câu tiếng Tày..." rows="1" aria-label="Câu tiếng Tày"></textarea>
             <button class="icon-btn mic" id="micBtn" type="button" title="Bấm để ghi âm" aria-label="Ghi âm">🎤</button>
             <button class="send" id="sendBtn" type="button" title="Gửi" aria-label="Gửi" disabled>➤</button>
           </div>
@@ -676,6 +680,11 @@
             <span class="kbd">Enter</span> gửi · <span class="kbd">Shift</span>+<span class="kbd">Enter</span> xuống dòng · 🎤 ghi âm chèn chữ (nhận dạng, không phải dịch)
           </div>
           <div class="error hidden" id="error"></div>
+          <details class="sub-note"><summary>Giữ nguyên tên riêng / Keep unchanged</summary>
+            <label for="protectedTerms">Tên hoặc cụm từ không dịch (cách nhau bằng dấu phẩy; tối đa 20)</label>
+            <input id="protectedTerms" maxlength="2000" placeholder="Nguyễn Hải Nam, OpenAI" style="width:100%;padding:8px;margin-top:6px" />
+          </details>
+          <div class="sub-note">Bản thử nghiệm · Tối đa 2.000 ký tự / 200 từ. Độ phủ từ điển không phải độ chính xác. Lịch sử được lưu trong trình duyệt này.</div>
         </div>
       </div>
     </main>
@@ -743,9 +752,15 @@
           var keys = (d.dictionary_keys || 0).toLocaleString("vi-VN");
           if (!d.dictionary_ok) {
             setStatus("bad", "Từ điển lỗi");
+          } else if (direction === "en2tay" || direction === "tay2en") {
+            setStatus(d.english && d.english.ready ? "ok" : "warn", d.english && d.english.ready ? "English · local model ready" : "English model not installed");
+            statusPill.title = "English uses two offline stages through Vietnamese. Experimental, not speaker-verified.";
+          } else if (!d.llm_enabled) {
+            setStatus("ok", "Sẵn sàng · " + keys + " mục");
+            statusPill.title = "Bộ dịch từ điển và ngữ cảnh đã sẵn sàng. LLM đang tắt theo kết quả đánh giá chất lượng.";
           } else if (!d.ollama_reachable || !d.ollama_model_in_use) {
-            setStatus("warn", "Chỉ từ điển · " + keys + " mục");
-            statusPill.title = "Không kết nối được Ollama — chỉ ghép nghĩa từ điển, không biên tập.";
+            setStatus("warn", "Thiếu mô hình LLM");
+            statusPill.title = "Chế độ LLM đã bật nhưng không tìm thấy mô hình Ollama.";
           } else {
             setStatus("ok", d.ollama_model_in_use);
             statusPill.title = "Từ điển " + keys + " mục · mô hình " + d.ollama_model_in_use;
@@ -821,6 +836,7 @@
         var m = String(mode || "");
         if (m.indexOf("ollama-") === 0) return "Đã biên tập · " + m.slice(7);
         if (m === "dictionary-context") return "Từ điển + ngữ cảnh";
+        if (m === "english-pivot-local") return "English · offline · via Vietnamese";
         if (m === "glossary-only-low-coverage") return "Chỉ từ điển · tra được quá ít";
         if (m === "glossary-only-ollama-fallback") return "Chỉ từ điển · mô hình lỗi";
         return m || "—";
@@ -831,6 +847,8 @@
         if (s === "dict-loose") return { cls: "amber", text: "khớp thiếu dấu" };
         if (s === "dict-fuzzy") return { cls: "amber", text: "đoán gần đúng" };
         if (s === "common_viet") return { cls: "amber", text: "giữ nguyên" };
+        if (s === "named_entity") return { cls: "jade", text: "tên riêng" };
+        if (s === "literal") return { cls: "jade", text: "giữ nguyên" };
         return { cls: "rose", text: "chưa có" };
       }
 
@@ -857,6 +875,15 @@
 
         head.appendChild(el("span", "badge neutral", modeLabel(mode)));
         wrap.appendChild(head);
+        if (meta.pivot_language) {
+          wrap.appendChild(el("div", "gap-note", "Experimental English translation via Vietnamese. Errors can compound; dictionary coverage applies only to the Vietnamese–Tày step."));
+          var pivotDetails = el("details", "gap-note");
+          pivotDetails.appendChild(el("summary", "", "Vietnamese intermediate / Bản trung gian tiếng Việt"));
+          pivotDetails.appendChild(el("p", "", meta.pivot_text || ""));
+          wrap.appendChild(pivotDetails);
+          if (meta.segmented_for_preservation) wrap.appendChild(el("div", "gap-note", "Names/literals were kept unchanged; translating around them can affect grammar."));
+        }
+        wrap.appendChild(el("div", "gap-note", "Mức tin cậy là ước lượng theo quy tắc, không phải xác suất đúng hay xác nhận của người bản ngữ."));
 
         // Những từ chưa dịch được — trước đây hoàn toàn không hiển thị,
         // nên người dùng không phân biệt được bản dịch chắc và bản đoán.
@@ -877,6 +904,16 @@
 
         var unknown = meta.unknown_terms || [];
         var passthrough = meta.passthrough_terms || [];
+        var preserved = meta.preserved_terms || [];
+        if (preserved.length) {
+          wrap.appendChild(el("div", "gap-note", "Giữ nguyên, không dịch:"));
+          var preservedChips = el("div", "chip-row");
+          preserved.forEach(function (item) {
+            var suffix = item.kind === "named_entity" ? " · tên riêng" : "";
+            preservedChips.appendChild(el("span", "chip", (item.text || "") + suffix));
+          });
+          wrap.appendChild(preservedChips);
+        }
         if (unknown.length || passthrough.length) {
           wrap.appendChild(el("div", "gap-note", "Chưa tra được nghĩa:"));
           var chips = el("div", "chip-row");
@@ -1200,20 +1237,26 @@
 
       /* ---------------- send ---------------- */
       async function translateRequest(question, signal) {
+        var protectedTerms = document.getElementById("protectedTerms").value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+        if (protectedTerms.length > 20 || protectedTerms.some(function (s) { return s.length > 100; })) throw new Error("Tối đa 20 cụm giữ nguyên, mỗi cụm tối đa 100 ký tự.");
         var res = await fetch("/api/translate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: question, direction: direction }),
+          body: JSON.stringify({ message: question, direction: direction, protected_terms: protectedTerms }),
           signal: signal
         });
         var data = await res.json().catch(function () { return null; });
-        if (!res.ok) throw new Error((data && data.detail) || "Lỗi API dịch.");
+        if (!res.ok) {
+          var detail = data && data.detail;
+          throw new Error(Array.isArray(detail) ? detail.map(function (item) { return item.msg; }).join("; ") : (detail || "Lỗi API dịch."));
+        }
         return data;
       }
       async function send() {
         if (isSending) return;
         var question = (inputEl.value || "").trim();
         if (!question) return;
+        if (question.length > 2000 || question.split(/\s+/).length > 200) { showError("Tối đa 2.000 ký tự / 200 từ mỗi lần dịch."); return; }
         if (!getCurrentSession()) createSession();
         showError("");
         isSending = true;
@@ -1266,6 +1309,7 @@
       });
       document.querySelectorAll(".suggest-card").forEach(function (btn) {
         btn.addEventListener("click", function () {
+          if (isSending) return;
           inputEl.value = btn.getAttribute("data-q") || "";
           autoExpand();
           refreshSendState();
@@ -1288,6 +1332,8 @@
                ["te pây dá lò?", "nó đi rồi à?"], ["ỏ mẻ mà dá", "a mẹ đã về"]]
             : [["ăn cơm", "kin khẩu"], ["con gà", "tua cáy"],
                ["tôi đi chơi", "khỏi pây liểu"], ["nhà", "rườn"]];
+          if (direction === "en2tay") samples = [["Hello", "Try a greeting"], ["I drink water.", "Everyday sentence"], ["My name is Nguyen Hai Nam.", "Name preservation"], ["I do not eat rice.", "Negation test"]];
+          if (direction === "tay2en") samples = [["kin khẩu", "Try an everyday phrase"], ["pây tàng", "Try a short phrase"], ["nặm", "Try a word"], ["rườn", "Try a word"]];
           document.querySelectorAll(".suggest-card").forEach(function (card, i) {
             if (!samples[i]) return;
             card.setAttribute("data-q", samples[i][0]);
@@ -1299,12 +1345,15 @@
             b.classList.toggle("active", b === btn);
           });
           try { localStorage.setItem("tay_viet_direction", direction); } catch (e) {}
-          var t2v = direction === "tay2vi";
-          inputEl.placeholder = t2v ? "Nhập câu tiếng Tày..." : "Nhập câu tiếng Việt...";
-          inputEl.setAttribute("aria-label", t2v ? "Câu tiếng Tày" : "Câu tiếng Việt");
+          var t2v = direction === "tay2vi", englishInput = direction === "en2tay", tayInput = t2v || direction === "tay2en";
+          inputEl.placeholder = englishInput ? "Type an English sentence..." : tayInput ? "Nhập câu tiếng Tày..." : "Nhập câu tiếng Việt...";
+          inputEl.setAttribute("aria-label", englishInput ? "English sentence" : tayInput ? "Câu tiếng Tày" : "Câu tiếng Việt");
           document.querySelector(".topbar h1").textContent =
-            t2v ? "Trợ lý dịch tiếng Tày" : "Trợ lý dịch sang tiếng Tày";
+            englishInput ? "English → Tày translator" : direction === "tay2en" ? "Tày → English translator" : t2v ? "Trợ lý dịch tiếng Tày" : "Trợ lý dịch sang tiếng Tày";
+          document.querySelector(".empty-state h2").textContent = englishInput ? "Translate English into Tày" : direction === "tay2en" ? "Translate Tày into English" : t2v ? "Nhập câu tiếng Tày cần dịch" : "Nhập câu tiếng Việt cần dịch";
+          document.querySelector(".topbar p").textContent = (englishInput || direction === "tay2en") ? "Offline · via Vietnamese · experimental" : "Tra từ điển và ngữ cảnh · chưa xác minh bởi người bản ngữ";
           if (micBtn) micBtn.classList.toggle("hidden", !t2v);
+          refreshStatus();
           inputEl.focus();
         });
       });
@@ -1338,8 +1387,8 @@
       refreshStatus();
       try {
         var savedDir = localStorage.getItem("tay_viet_direction");
-        if (savedDir === "vi2tay") {
-          var b = document.querySelector('.dir-opt[data-dir="vi2tay"]');
+        if (["vi2tay", "en2tay", "tay2en"].includes(savedDir)) {
+          var b = document.querySelector('.dir-opt[data-dir="' + savedDir + '"]');
           if (b) b.click();
         }
       } catch (e) {}

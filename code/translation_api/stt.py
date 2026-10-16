@@ -1,10 +1,9 @@
 import base64
 import os
 import tempfile
-import whisper
 
 
-_WHISPER_MODELS: dict[str, "whisper.Whisper"] = {}
+_WHISPER_MODELS: dict[str, object] = {}
 
 
 def _env_flag(name: str, *, default_on: bool) -> bool:
@@ -16,7 +15,14 @@ def _env_flag(name: str, *, default_on: bool) -> bool:
 
 
 def _get_whisper_model(model_name: str):
-    """Cache model để tránh load lại mỗi request."""
+    """Lazy-load Whisper so text translation works without speech dependencies."""
+    try:
+        import whisper
+    except ImportError as exc:
+        raise RuntimeError(
+            "Speech input is unavailable. Install openai-whisper and put ffmpeg on PATH."
+        ) from exc
+
     model = _WHISPER_MODELS.get(model_name)
     if model is None:
         model = whisper.load_model(model_name)
