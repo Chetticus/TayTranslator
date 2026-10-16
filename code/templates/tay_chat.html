@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <title>Tày → Việt · Trợ lý dịch</title>
+  <title>TàyTranslator · Dịch tiếng Tày</title>
   <style>
     /* Bảng màu lấy cảm hứng từ vải chàm Tày: nền chàm sâu, nhấn ngọc bích.
        Ba màu ngữ nghĩa (jade / amber / rose) dùng thống nhất cho độ tin cậy. */
@@ -84,17 +84,8 @@
       margin-bottom: 0.9rem;
       padding: 0 0.15rem;
     }
-    .brand-mark {
-      width: 30px; height: 30px;
-      flex: 0 0 auto;
-      border-radius: 9px;
-      background: linear-gradient(140deg, var(--indigo) 0%, var(--violet) 100%);
-      display: grid; place-items: center;
-      font-weight: 800; font-size: 0.9rem; color: #fff;
-      box-shadow: 0 3px 12px rgba(99, 102, 241, 0.4);
-    }
-    .brand-text { font-size: 0.97rem; font-weight: 700; letter-spacing: 0.01em; }
-    .brand-sub { font-size: 0.73rem; color: var(--faint); margin-top: 1px; }
+    .brand-text { font-size: 1.1rem; font-weight: 650; letter-spacing: -0.025em; }
+    .brand-sub { font-size: 0.73rem; color: var(--muted); margin-top: 4px; }
 
     .new-chat {
       width: 100%;
@@ -199,7 +190,7 @@
     .app.sidebar-collapsed .sidebar { padding: 0.8rem 0.55rem; align-items: center; }
     .app.sidebar-collapsed .new-chat,
     .app.sidebar-collapsed .collapse-btn { justify-content: center; text-align: center; }
-    .app.sidebar-collapsed .brand { justify-content: center; }
+    .app.sidebar-collapsed .brand { display: none; }
 
     .hidden { display: none !important; }
 
@@ -285,14 +276,6 @@
 
     /* ---------------- Empty state ---------------- */
     .empty-state { margin-top: 6vh; text-align: center; }
-    .empty-mark {
-      width: 54px; height: 54px; margin: 0 auto 0.9rem;
-      border-radius: 15px;
-      background: linear-gradient(140deg, var(--indigo) 0%, var(--violet) 100%);
-      display: grid; place-items: center;
-      font-size: 1.35rem; font-weight: 800; color: #fff;
-      box-shadow: 0 8px 26px rgba(99, 102, 241, 0.34);
-    }
     .empty-state h2 { margin: 0 0 0.3rem; font-size: 1.32rem; font-weight: 700; }
     .empty-state .lead { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.5rem; }
     .suggest-label {
@@ -608,10 +591,9 @@
   <div class="app">
     <aside class="sidebar" id="sidebar">
       <div class="brand">
-        <div class="brand-mark">Tà</div>
         <div class="brand-copy">
-          <div class="brand-text">Tày → Việt</div>
-          <div class="brand-sub">Trợ lý dịch &amp; tra từ</div>
+          <div class="brand-text">TàyTranslator</div>
+          <div class="brand-sub">Tày · Việt · English</div>
         </div>
       </div>
       <button class="new-chat" id="newChatBtn" type="button">＋ <span>Đoạn chat mới</span></button>
@@ -628,7 +610,7 @@
           <button class="drawer-btn" id="drawerBtn" type="button" aria-label="Mở thanh bên">☰</button>
           <div>
             <h1>Trợ lý dịch tiếng Tày</h1>
-            <p>Tra từ điển trước, mô hình chỉ biên tập lại cho mượt</p>
+            <p>Dịch và tra từ giữa tiếng Tày, tiếng Việt và tiếng Anh</p>
           </div>
         </div>
         <div class="dir-switch" id="dirSwitch" role="group" aria-label="Chiều dịch">
@@ -646,7 +628,6 @@
       <div class="chat-scroll" id="chatScroll">
         <div class="chat-inner">
           <div class="empty-state" id="emptyState">
-            <div class="empty-mark">Tà</div>
             <h2>Nhập câu tiếng Tày cần dịch</h2>
             <div class="lead">Mỗi bản dịch đều kèm mức độ tin cậy và các từ đã tra được.</div>
             <div class="suggest-label">Thử nhanh</div>
